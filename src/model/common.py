@@ -209,5 +209,5 @@ def cohen_kappa_loss(num_classes, weights=None, metrics_collections=None, update
    def cohen_kappa(y_true, y_pred):
         y_true = K.argmax(y_true, axis=-1)
         y_pred= K.argmax(y_pred, axis=-1)
-        return -_cohen_kappa(y_true, y_pred, num_classes, weights, metrics_collections, updates_collections, name)
+        return _cohen_kappa(y_true, y_pred, num_classes, weights, metrics_collections, updates_collections, name)
    return cohen_kappa
