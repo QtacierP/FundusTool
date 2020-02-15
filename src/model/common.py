@@ -8,7 +8,41 @@ from keras.utils import multi_gpu_model
 import os
 import tensorflow as tf
 import keras.backend as K
+from keras_contrib.layers.normalization.instancenormalization \
+    import InstanceNormalization
 
+def MyConv2d(x,
+              filters,
+              kernel_size,
+              strides=1,
+              dilated_rate=(1, 1),
+              padding='same',
+              activation='relu',
+              use_bias=False,
+              normalization='bn',
+              name=None):
+    x = Conv2D(filters,
+                      kernel_size,
+                      strides=strides,
+                      padding=padding,
+                      use_bias=use_bias,
+                      name=name, dilation_rate=dilated_rate)(x)
+    if not use_bias:
+        if normalization == 'bn':
+            bn_axis = 3
+            bn_name = None if name is None else name + '_bn'
+            x = BatchNormalization(axis=bn_axis,
+                                          scale=False,
+                                          name=bn_name)(x)
+        else:
+            x = InstanceNormalization(name=name+'_in')(x)
+    if activation is not None:
+        ac_name = None if name is None else name + '_ac'
+        if activation == 'LeakyReLU':
+            x = LeakyReLU(alpha=0.2)(x)
+        else:
+            x = Activation(activation, name=ac_name)(x)
+    return x
 
 class AbstractModel():
     def __init__(self, args):
@@ -42,13 +76,13 @@ class AbstractModel():
             open(os.path.join(self.args.model_path, '{}_architecture.json'.format(self.args.model)), 'w').write(json_string)
         print("[INFO] Model saved")
 
-    def train(self, data_dir):
+    def train(self, train_data, val_data):
         pass
 
-    def test(self, data_dir):
+    def test(self, test_data):
         pass
 
-def add_new_last_layer(base_model, nb_classes, fc_size=1024):
+def add_new_last_layer(base_model, nb_classes, fc_size=1024, name=''):
     """Add last layer to the convnet
     Args:
     base_model: keras model excluding top
@@ -63,7 +97,7 @@ def add_new_last_layer(base_model, nb_classes, fc_size=1024):
         predictions = Dense(nb_classes, activation='softmax')(x)
     else:
         predictions = Dense(1, activation='sigmoid')(x)  # new sigmoid layer
-    model = Model(input=base_model.input, output=predictions)
+    model = Model(input=base_model.input, output=predictions, name=name)
     return model
 
 
@@ -205,9 +239,9 @@ def _cohen_kappa(y_true, y_pred, num_classes, weights=None, metrics_collections=
       kappa = tf.identity(kappa)
    return kappa
 
-def cohen_kappa_loss(num_classes, weights=None, metrics_collections=None, updates_collections=None, name=None):
-   def cohen_kappa(y_true, y_pred):
+def cohen_kappa(num_classes, weights=None, metrics_collections=None, updates_collections=None, name=None):
+   def cohen_kappa_func(y_true, y_pred):
         y_true = K.argmax(y_true, axis=-1)
         y_pred= K.argmax(y_pred, axis=-1)
         return _cohen_kappa(y_true, y_pred, num_classes, weights, metrics_collections, updates_collections, name)
-   return cohen_kappa
+   return cohen_kappa_func

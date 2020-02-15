@@ -1,7 +1,6 @@
+from importlib import import_module
 
-class AbstractDataLoader():
-    def __init__(self, args):
-        self.args = args
 
-    def load(self):
-        pass
+def get_dataloder(args):
+    module = import_module('data.' + args.task)
+    return module.MyDataLoader(args)

@@ -32,8 +32,6 @@ args = args.parse_args()
 
 def get_template(args):
     # Get the template of the dataset
-
-
     args.model_path = os.path.join(args.save, args.task, args.dataset + '_{}'.format(args.size), args.model)
     if not os.path.exists(args.model_path):
         os.makedirs(args.model_path)
