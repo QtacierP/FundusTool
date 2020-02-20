@@ -1,5 +1,5 @@
 from data.common import AbstractDataLoader
-from keras_preprocessing.image import ImageDataGenerator
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import os
 
 class MyDataLoader(AbstractDataLoader):

@@ -1,13 +1,13 @@
 from model.common import AbstractModel
-from keras.layers import Input
+from tensorflow.keras.layers import Input
 from model.common import add_new_last_layer, get_check_point, TensorBoard
-from keras.utils import multi_gpu_model
-from keras_preprocessing.image import ImageDataGenerator
+from tensorflow.keras.utils import multi_gpu_model
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from utils import normalize
 import os
-from keras.optimizers import Adam
-from keras.losses import categorical_crossentropy
-from keras.metrics import categorical_accuracy
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.losses import categorical_crossentropy
+from tensorflow.keras.metrics import categorical_accuracy
 from model.common import cohen_kappa
 from model.backbone import InceptionResNetV2_backbone, InceptionV3_backbone
 

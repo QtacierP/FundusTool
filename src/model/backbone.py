@@ -1,11 +1,11 @@
-from keras.layers import *
-from keras.models import Model
+from tensorflow.keras.layers import *
+from tensorflow.keras.models import Model
 import tensorflow as tf
 from model.common import MyConv2d, add_new_last_layer
-from keras.models import Model
-from keras.applications.inception_v3 import InceptionV3, preprocess_input
-import keras.backend as K
-from keras.applications.inception_resnet_v2 import InceptionResNetV2
+from tensorflow.keras.models import Model
+from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
+import tensorflow.keras.backend as K
+from tensorflow.keras.applications.inception_resnet_v2 import InceptionResNetV2
 
 def UNetBN_backbone(inputs, num_class, name=''):
     # 288 x 288 x 32

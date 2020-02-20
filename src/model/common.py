@@ -1,13 +1,13 @@
-from keras.layers import *
-from keras.models import Model
+from tensorflow.keras.layers import *
+from tensorflow.keras.models import Model
 from sklearn.metrics import *
-from keras.callbacks import Callback
-from keras.callbacks import TensorBoard, ModelCheckpoint
-from keras.models import model_from_json
-from keras.utils import multi_gpu_model
+from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint
+from tensorflow.keras.models import model_from_json
+from tensorflow.keras.utils import multi_gpu_model
 import os
 import tensorflow as tf
-import keras.backend as K
+import tensorflow.keras.backend as K
 from keras_contrib.layers.normalization.instancenormalization \
     import InstanceNormalization
 
