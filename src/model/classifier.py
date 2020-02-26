@@ -1,17 +1,12 @@
+import torch
+import torch.nn as nn
+from torch.optim import Adam
 from model.common import AbstractModel
-from tensorflow.keras.layers import Input
-from model.common import add_new_last_layer, get_check_point, TensorBoard
-from tensorflow.keras.utils import multi_gpu_model
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from utils import normalize
-import os
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.losses import categorical_crossentropy
-from tensorflow.keras.metrics import categorical_accuracy
-from model.common import cohen_kappa
-from model.backbone import InceptionResNetV2_backbone, InceptionV3_backbone
-
-
+from model.backbone import InceptionV3_backbone, resnet101_backbone
+from model.callback import MyLogger, WarmupLRScheduler
+from torch.utils.data import DataLoader
+from utils import accuracy, quadratic_weighted_kappa
+import numpy as np
 
 
 class MyModel(AbstractModel):
@@ -19,72 +14,80 @@ class MyModel(AbstractModel):
         super(MyModel, self).__init__(args)
 
     def _init_model(self):
-        inputs = Input((self.args.size, self.args.size, self.args.n_colors))
+        super(MyModel, self)._init_model()
         if self.args.model == 'InceptionV3':
-            self.single_model = InceptionV3_backbone(inputs, num_class=self.args.n_classes)
-        elif self.args.model == 'InceptionResNetV2':
-            self.single_model = InceptionResNetV2_backbone(inputs, num_class=self.args.n_classes)
+            self.model = InceptionV3_backbone(self.args.n_classes)
+        elif self.args.model == 'resnet101':
+            self.model = resnet101_backbone(self.args.n_classes)
         else:
-            raise NotImplementedError('{} model hasn\'nt been implemented'
-                                      .format(self.args.model))
+            raise NotImplementedError('{} not implemented yet'.
+                                      format(self.args.model))
         if self.args.n_gpus > 1:
-            self.model = multi_gpu_model(self.single_model,
-                                         gpus=self.args.n_gpus)
-        else:
-            self.model = self.single_model
-        self.model.compile(optimizer=Adam(lr=self.args.lr),
-                           loss=categorical_crossentropy,
-                           metrics=[categorical_accuracy, cohen_kappa(num_classes=self.args.n_classes)])
+            self.model = nn.DataParallel(self.model)
+        self.optimizer = Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
+        self.loss = nn.CrossEntropyLoss().cuda()
 
-    def _init_callbacks(self):
-        self.callbacks.append(
-            get_check_point(
-                filepath=os.path.join(self.args.model_path,
-                                      '{}_best_weights.h5'.format(self.args.model)),
-                metrics=self.args.metric,
-                verbose=1,
-                model=self.single_model,
-                moniter=self.args.metric,
-                multi_gpus=self.args.n_gpus,
-                mode='auto',
-                save_best_only=True,
-            )
-        )
-        self.callbacks.append(TensorBoard(
-                log_dir=self.args.checkpoint,
-                write_images=True,
-                write_graph=True,
-            ))
 
-    def train(self, train_data, val_data):
-        train_gen = ImageDataGenerator(preprocessing_function=normalize, vertical_flip=True,
-                            horizontal_flip=True)
-        val_gen = ImageDataGenerator(preprocessing_function=normalize)
-        if isinstance(train_data, str): # Load data from dir
-            train_load_data_func = train_gen.flow_from_directory\
-                (train_data, target_size=(self.args.size, self.args.size),
-                 batch_size=self.args.batch_size)
-            val_load_data_func = val_gen.flow_from_directory\
-                (val_data, target_size=(self.args.size, self.args.size),
-                 batch_size=self.args.batch_size)
-        else:
-            train_load_data_func = train_gen.flow\
-                (x=train_data[0], y=train_data[1],
-                 batch_size=self.args.batch_size)
-            val_load_data_func = val_gen.flow\
-                (x=val_data[0], y=val_data[1],
-                 batch_size=self.args.batch_size)
+    def train(self, train_dataloader, val_dataloader):
+        losses_name = [self.args.loss, 'accuracy']
+        step = train_dataloader.__len__()
+        warmup_scheduler = WarmupLRScheduler(self.optimizer, self.args.warm_epochs * step, self.args.lr)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR\
+            (self.optimizer, T_max=(self.args.epochs -
+                                    self.args.warm_epochs) * step)
+        logger = MyLogger(self.args, self.args.epochs, self.args.batch_size,
+                          losses_name, step=step, model=self.model,
+                          metric=self.args.metric, weighted_sampler=train_dataloader.sampler)
+        logger.on_train_begin()
+        for epoch in range(self.args.epochs):
+            logger.on_epoch_begin()
+            for i, batch in enumerate(train_dataloader):
+                losses = {}
+                logger.on_batch_begin()
+                self.optimizer.zero_grad()
+                x, y = batch
+                x = x.cuda()
+                y = y.cuda()
+                # Forward
+                pred = self.model(x)
+                loss = self.loss(pred, y)
+                acc, correct = accuracy(pred, y, supervised=True)
+                loss.backward()
+                self.optimizer.step()
+                losses[self.args.loss] = loss.detach().cpu().numpy()
+                losses['accuracy'] = [acc, correct]
+                logger.on_batch_end(losses)
+            val_acc, val_kappa = self.test(val_dataloader)
+            metric = {'val_accuracy': val_acc, 'val_kappa': val_kappa}
+            logger.on_epoch_end(metric)
+        logger.on_train_end()
 
-        self.model.fit_generator(
-            generator=train_load_data_func,
-            epochs=self.args.epochs,
-            verbose=1,
-            validation_data=val_load_data_func,
-            callbacks=self.callbacks
-        )
-        self.single_model.save_weights(os.path.join(self.args.model_path, '{}_last_weights.h5'.format(self.args.model)))
 
-    def test(self, data_dir):
-        gen = ImageDataGenerator(preprocessing_function=normalize)
-        results = self.model.evaluate_generator(generator=gen.flow_from_directory(data_dir, target_size=(self.args.size, self.args.size)))
-        print(results)
+    def test(self, test_dataloader):
+        c_matrix = np.zeros((self.args.n_classes
+                             , self.args.n_classes), dtype=int)
+        self.model.eval()
+        torch.set_grad_enabled(False)
+        total = 0
+        correct = 0
+        for test_data in test_dataloader:
+            x, y = test_data
+            x, y = x.cuda(), y.long().cuda()
+            y_pred = self.model(x)
+            total += y.size(0)
+            correct += accuracy(y_pred, y, c_matrix) * y.size(0)
+        acc = round(correct / total, 4)
+        kappa = quadratic_weighted_kappa(c_matrix)
+        self.model.train()
+        torch.set_grad_enabled(True)
+        return acc, kappa
+
+
+
+
+
+
+
+
+
+
