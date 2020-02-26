@@ -81,7 +81,6 @@ class MyLogger():
                 print('Current learning rate is {}'.format(curr_lr))
 
     def on_batch_begin(self):
-
         if self.warmup_scheduler and not self.warmup_scheduler.is_finish():
             self.warmup_scheduler.step()
         elif self.lr_scheduler:

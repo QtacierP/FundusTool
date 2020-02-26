@@ -31,13 +31,14 @@ class MyModel(AbstractModel):
     def train(self, train_dataloader, val_dataloader):
         losses_name = [self.args.loss, 'accuracy']
         step = train_dataloader.__len__()
-        warmup_scheduler = WarmupLRScheduler(self.optimizer, self.args.warm_epochs * step, self.args.lr)
+        warmup_scheduler = None
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR\
             (self.optimizer, T_max=(self.args.epochs -
                                     self.args.warm_epochs) * step)
         logger = MyLogger(self.args, self.args.epochs, self.args.batch_size,
                           losses_name, step=step, model=self.model,
-                          metric=self.args.metric, weighted_sampler=train_dataloader.sampler)
+                          metric=self.args.metric, optimizer=self.optimizer, weighted_sampler=train_dataloader.sampler,
+                          warmup_scheduler=warmup_scheduler, lr_scheduler=lr_scheduler)
         logger.on_train_begin()
         for epoch in range(self.args.epochs):
             logger.on_epoch_begin()
@@ -78,6 +79,7 @@ class MyModel(AbstractModel):
             correct += accuracy(y_pred, y, c_matrix) * y.size(0)
         acc = round(correct / total, 4)
         kappa = quadratic_weighted_kappa(c_matrix)
+        print(c_matrix)
         self.model.train()
         torch.set_grad_enabled(True)
         return acc, kappa
