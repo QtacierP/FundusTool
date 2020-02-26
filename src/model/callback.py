@@ -15,7 +15,7 @@ class MyLogger():
     # A Keras style Logger
     def __init__(self, args, max_epoch, batch_size,
                  losses_name, step, model, metric='val_kappa', current_epoch=1, optimizer=None, warmup_scheduler=None,
-                 lr_scheduler=None, weighted_sampler=None):
+                 lr_scheduler=None):
         self.callbacks = []
         self.max_epoch = max_epoch
         self.epoch = current_epoch
@@ -30,7 +30,6 @@ class MyLogger():
         self.warmup_scheduler = warmup_scheduler
         self.lr_scheduler = lr_scheduler
         self.optimizer = optimizer
-        self.weighted_sampler = weighted_sampler
         self.metric = metric
         self.history = 0 # Record for acc
         # Compile metric opt
@@ -67,9 +66,6 @@ class MyLogger():
         print('=> Epoch {} <='.format(str(self.epoch)))
         self.bar = TorchBar(target=self.step, width=30)
         self.batch_num = 1
-        if self.weighted_sampler is not None:
-            self.weighted_sampler.step()
-
             # learning rate update
         if self.warmup_scheduler is not None and not self.warmup_scheduler.is_finish():
             if self.epoch >= 1:

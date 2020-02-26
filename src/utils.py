@@ -7,14 +7,18 @@ def normalize(imgs):
 
 
 
-def accuracy(predictions, targets, c_matrix=None, supervised=False):
+def accuracy(predictions, targets, c_matrix=None, supervised=False, regression=False):
     predictions = predictions.data
     targets = targets.data
 
-    # avoid modifying origin predictions
-    predicted = torch.tensor(
-        [torch.argmax(p) for p in predictions]
-    ).cuda().long()
+    if regression:
+        # avoid modifying origin predictions
+        predicted = torch.tensor(
+            [torch.argmax(p) for p in predictions]
+        ).cuda().long()
+    else:
+        predicted = torch.tensor(torch.round(predictions)
+        ).cuda().long()
 
     # update confusion matrix
     if c_matrix is not None:

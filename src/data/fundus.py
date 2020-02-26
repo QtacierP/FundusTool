@@ -1,10 +1,12 @@
-from data.common import AbstractDataLoader, ScheduledWeightedSampler, PeculiarSampler, make_weights_for_balanced_classes
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from data.common import AbstractDataLoader, \
+    ScheduledWeightedSampler, PeculiarSampler, \
+    make_weights_for_balanced_classes, KrizhevskyColorAugmentation
 import os
 from torchvision import datasets, transforms
 import pandas as pd
 from tqdm import tqdm
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
+import torch
 
 
 class MyDataLoader(AbstractDataLoader):
@@ -42,7 +44,6 @@ class MyDataLoader(AbstractDataLoader):
                             print('cp {} {}'.format(img_path, to_path))
             test_table = pd.read_csv(test_csv)
             for idx in tqdm(range(test_table.shape[0])):
-
                 if int(test_table['quality'][idx]) not in quality_list:
                     continue
                 img_name = test_table['image'][idx]
@@ -61,10 +62,8 @@ class MyDataLoader(AbstractDataLoader):
         train_path = os.path.join(self.args.data_dir, 'train')
         test_path = os.path.join(self.args.data_dir, 'test')
         val_path = os.path.join(self.args.data_dir, 'val')
-
         # Compile Pre-processing
         train_preprocess = transforms.Compose([
-
             transforms.RandomResizedCrop(
                 size=self.args.size,
                 scale=(1 / 1.15, 1.15),
@@ -80,7 +79,8 @@ class MyDataLoader(AbstractDataLoader):
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(self.args.mean,
-                                 self.args.std)
+                                 self.args.std),
+            KrizhevskyColorAugmentation(sigma=0.5)
         ])
         test_preprocess = transforms.Compose([
             transforms.Resize((self.args.size, self.args.size)),
@@ -95,11 +95,12 @@ class MyDataLoader(AbstractDataLoader):
         val_dataset = datasets.ImageFolder(val_path, test_preprocess)
         weights = make_weights_for_balanced_classes(train_dataset.imgs, len(train_dataset.classes))
         print('Use sample weights')
-        print(weights)
+        weights = torch.DoubleTensor(weights)
         # Compile Sampler
-        train_targets = [sampler[1] for sampler in train_dataset.samples]
+
         # This sampler only works for
-        weighted_sampler = PeculiarSampler(len(train_dataset), train_targets, self.args.batch_size, weights, False)
+
+        weighted_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights), replacement=False)
         #weighted_sampler = None
         # Compile DataLoader
         train_dataloader = DataLoader(train_dataset, batch_size=self.args.batch_size,

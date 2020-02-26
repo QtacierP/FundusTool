@@ -16,28 +16,31 @@ class MyModel(AbstractModel):
     def _init_model(self):
         super(MyModel, self)._init_model()
         if self.args.model == 'InceptionV3':
-            self.model = InceptionV3_backbone(self.args.n_classes)
+            self.model = InceptionV3_backbone(self.args.n_classes, self.args.regression)
         elif self.args.model == 'resnet101':
-            self.model = resnet101_backbone(self.args.n_classes)
+            self.model = resnet101_backbone(self.args.n_classes, self.args.regression)
         else:
             raise NotImplementedError('{} not implemented yet'.
                                       format(self.args.model))
         if self.args.n_gpus > 1:
             self.model = nn.DataParallel(self.model)
         self.optimizer = Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
-        self.loss = nn.CrossEntropyLoss().cuda()
+        if self.args.regression:
+            self.loss = nn.L1Loss().cuda()
+        else:
+            self.loss = nn.CrossEntropyLoss().cuda()
 
 
     def train(self, train_dataloader, val_dataloader):
-        losses_name = [self.args.loss, 'accuracy']
+        losses_name = ['loss', 'accuracy']
         step = train_dataloader.__len__()
-        warmup_scheduler = None
+        warmup_scheduler = WarmupLRScheduler(self.optimizer, self.args.epochs * step, self.args.lr)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR\
             (self.optimizer, T_max=(self.args.epochs -
                                     self.args.warm_epochs) * step)
         logger = MyLogger(self.args, self.args.epochs, self.args.batch_size,
                           losses_name, step=step, model=self.model,
-                          metric=self.args.metric, optimizer=self.optimizer, weighted_sampler=train_dataloader.sampler,
+                          metric=self.args.metric, optimizer=self.optimizer,
                           warmup_scheduler=warmup_scheduler, lr_scheduler=lr_scheduler)
         logger.on_train_begin()
         for epoch in range(self.args.epochs):
@@ -52,10 +55,10 @@ class MyModel(AbstractModel):
                 # Forward
                 pred = self.model(x)
                 loss = self.loss(pred, y)
-                acc, correct = accuracy(pred, y, supervised=True)
+                acc, correct = accuracy(pred, y, supervised=True, regression=self.args.regression)
                 loss.backward()
                 self.optimizer.step()
-                losses[self.args.loss] = loss.detach().cpu().numpy()
+                losses['loss'] = loss.detach().cpu().numpy()
                 losses['accuracy'] = [acc, correct]
                 logger.on_batch_end(losses)
             val_acc, val_kappa = self.test(val_dataloader)
@@ -76,9 +79,10 @@ class MyModel(AbstractModel):
             x, y = x.cuda(), y.long().cuda()
             y_pred = self.model(x)
             total += y.size(0)
-            correct += accuracy(y_pred, y, c_matrix) * y.size(0)
+            correct += accuracy(y_pred, y, c_matrix, regression=self.args.regression) * y.size(0)
         acc = round(correct / total, 4)
         kappa = quadratic_weighted_kappa(c_matrix)
+        print('')
         print(c_matrix)
         self.model.train()
         torch.set_grad_enabled(True)
