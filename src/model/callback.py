@@ -9,13 +9,13 @@ import torch
 from matplotlib.pyplot import imshow, show
 from torch.utils.tensorboard.summary import convert_to_HWC, make_image
 from torch.utils.tensorboard.writer import make_np
-
+from utils import UnNormalize
 
 class MyLogger():
     # A Keras style Logger
     def __init__(self, args, max_epoch, batch_size,
                  losses_name, step, model, metric='val_kappa', current_epoch=1, optimizer=None, warmup_scheduler=None,
-                 lr_scheduler=None):
+                 lr_scheduler=None, weighted_sampler=None):
         self.callbacks = []
         self.max_epoch = max_epoch
         self.epoch = current_epoch
@@ -32,6 +32,7 @@ class MyLogger():
         self.optimizer = optimizer
         self.metric = metric
         self.history = 0 # Record for acc
+        self.weighted_sampler = weighted_sampler
         # Compile metric opt
         if 'loss' in metric:
             self.opt = np.less
@@ -67,6 +68,8 @@ class MyLogger():
         self.bar = TorchBar(target=self.step, width=30)
         self.batch_num = 1
             # learning rate update
+        if self.weighted_sampler is not None:
+            self.weighted_sampler.step()
         if self.warmup_scheduler is not None and not self.warmup_scheduler.is_finish():
             if self.epoch >= 1:
                 curr_lr = self.optimizer.param_groups[0]['lr']
@@ -82,21 +85,29 @@ class MyLogger():
         elif self.lr_scheduler:
             self.lr_scheduler.step()
 
-    def on_batch_end(self, losses: dict):
+    def on_batch_end(self, losses: dict, imgs_list=None):
         values = []
         for loss_name in losses.keys():
             loss = losses[loss_name]
             if not isinstance(loss, list):
                 self.losses[loss_name].append(loss)
                 values.append((loss_name, loss))
-            else:
-                self.losses[loss_name].append(loss[0])
-                self.history += loss[1]
-                smooth_loss = (self.history) / (self.batch_size * self.batch_num)
-
-                values.append((loss_name, smooth_loss))
         self.bar.update(self.batch_num, values=values)
+        # TODO: Fix dimension bug
+        if imgs_list is not None and self.batch_num % 5 == 0:
+            ori_imgs = imgs_list[0]
+            gts = imgs_list[1]
+            preds = imgs_list[2]
+            un_norm = UnNormalize(self.args.mean,
+                                  self.args.std)
+            ori_imgs = un_norm(ori_imgs)
+            imgs_list = [ori_imgs.float(), gts.float(), preds.float()]
+            imgs = torch.cat(imgs_list, dim=0)
+            imgs = make_grid(imgs, nrow=self.batch_size)
+            self.writer.add_image('segmentation', imgs, global_step=self.batch_num)
+
         self.batch_num += 1
+
 
     def on_epoch_end(self, val_metric: dict):
         del(self.bar)

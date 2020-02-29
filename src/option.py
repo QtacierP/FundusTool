@@ -5,8 +5,8 @@ import os
 args = argparse.ArgumentParser(description='The option of FundusTool')
 
 # Dataset option
-args.add_argument('--task', type=str, default='fundus', help='fundus|vessel|optic')
-args.add_argument('--dataset', type=str, default='EyePac', help='EyePac')
+args.add_argument('--task', type=str, default='optic', help='fundus|vessel|optic')
+args.add_argument('--dataset', type=str, default='ORIGA', help='EyePac')
 args.add_argument('--data_dir', type=str, default='../data', help='')
 args.add_argument('--prepare', action='store_true', help='Use detector or not')
 args.add_argument('--seed', type=int, default=0, help='')
@@ -15,6 +15,7 @@ args.add_argument('--n_threads', type=int, default=32, help='')
 args.add_argument('--n_colors', type=int, default=3, help='')
 args.add_argument('--n_classes', type=int, default=5, help='')
 args.add_argument('--size', type=int, default=256, help='')
+args.add_argument('--stage', type=int, default=0, help='')
 args.add_argument('--decay_rate', type=float, default=1.0, help='')
 
 # Training option
@@ -45,6 +46,7 @@ def get_template(args):
         os.makedirs(args.checkpoint)
     args.data_dir = os.path.join(args.data_dir, args.task, args.dataset)
     if args.task == 'fundus':
+        print('use fundus statistic')
         args.mean = [108.64628601 / 255, 75.86886597 / 255, 54.34005737 / 255]
         args.std = [70.53946096 / 255, 51.71475228 / 255, 43.03428563 / 255]
     else:

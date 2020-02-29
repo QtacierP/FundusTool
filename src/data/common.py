@@ -1,6 +1,19 @@
 import torch
 from torch.utils.data.sampler import Sampler
 import random
+import os
+import glob
+from PIL import Image
+from scipy.io import loadmat
+from torchvision.transforms import ToPILImage
+import numpy as np
+
+
+
+BALANCE_WEIGHTS = torch.tensor([1.3609453700116234, 14.378223495702006,
+                                6.637566137566138, 40.235967926689575,
+                                49.612994350282484], dtype=torch.double)
+FINAL_WEIGHTS = torch.as_tensor([1, 2, 2, 2, 2], dtype=torch.double)
 
 # for color augmentation, computed by origin author
 U = torch.tensor([[-0.56543481, 0.71983482, 0.40240142],
@@ -23,21 +36,54 @@ class AbstractDataLoader():
         pass
 
 
-class ScheduledWeightedSampler(Sampler):
-    def __init__(self, args, num_samples, train_targets, replacement=True):
+class ORIGIADataset(torch.utils.data.Dataset):
+    def __init__(self, root, transforms, gt_transforms, stage=0):
+        super(ORIGIADataset, self).__init__()
+        self.root = root
+        self.transforms = transforms
+        self.gt_transforms = gt_transforms
+        self.imgs_path =  os.path.join(root, 'images_{}'.format(stage))
+        self.labels_path = os.path.join(root, 'gts_{}'.format(stage))
+        self.imgs_list =  sorted(glob.glob(os.path.join(self.imgs_path, '*.jpg')))
+        self.labels_list =  sorted(glob.glob(os.path.join(self.labels_path, '*.mat')))
 
+
+    def __len__(self):
+        return len(self.imgs_list)
+
+    def __getitem__(self, index):
+        img = Image.open(self.imgs_list[index])
+        label = loadmat(self.labels_list[index])['mask']
+        # Keep the same transformation
+        seed = np.random.randint(999999999)
+        random.seed(seed)
+
+        # TODO: There exists a bug, when you use ToTensor in transform.
+        # TODO: The value will be changed in label
+        label = np.asarray(self.gt_transforms(label))
+        label = torch.from_numpy(label)
+        random.seed(seed)
+        img = self.transforms(img)
+
+        return img, label
+
+
+
+class ScheduledWeightedSampler(Sampler):
+    def __init__(self, num_samples, train_targets, initial_weight=BALANCE_WEIGHTS,
+                 final_weight=FINAL_WEIGHTS, replacement=True):
         self.num_samples = num_samples
         self.train_targets = train_targets
         self.replacement = replacement
+
         self.epoch = 0
-        self.decay_rate = args.decay_rate
-        self.w0 = torch.as_tensor([1] * args.n_classes, dtype=torch.double)
-        self.wf = torch.as_tensor([1] * args.n_classes, dtype=torch.double)
+        self.w0 = initial_weight
+        self.wf = final_weight
         self.train_sample_weight = torch.zeros(len(train_targets), dtype=torch.double)
 
     def step(self):
         self.epoch += 1
-        factor = self.decay_rate**(self.epoch - 1)
+        factor = 0.975**(self.epoch - 1)
         self.weights = factor * self.w0 + (1 - factor) * self.wf
         for i, _class in enumerate(self.train_targets):
             self.train_sample_weight[i] = self.weights[_class]
@@ -47,6 +93,7 @@ class ScheduledWeightedSampler(Sampler):
 
     def __len__(self):
         return self.num_samples
+
 
 def make_weights_for_balanced_classes(images, nclasses):
     count = [0] * nclasses
@@ -59,7 +106,7 @@ def make_weights_for_balanced_classes(images, nclasses):
     weight = [0] * len(images)
     for idx, val in enumerate(images):
         weight[idx] = weight_per_class[val[1]]
-    return weight
+    return weight, weight_per_class
 
 class PeculiarSampler(Sampler):
     # Only used for Fundus

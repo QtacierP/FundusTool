@@ -2,7 +2,7 @@
 ----
 A very simple repo for pre-trained model used to enhance retina fundus. There are mainly three parts:
 > - DR Classify  (implement a simple version)
-> - Vessel Segmentation (not yet)
+> - Vessel Segmentation (Some bugs need to fix)
 >- OD & OC Segmentation (not yet)
 
 This repo is only used for pre-trained model, so I will not focus on the details.
