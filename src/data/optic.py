@@ -6,6 +6,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler, ConcatDataset, random_split
 import torch
 from option import args
+from PIL.Image import NEAREST
 
 # This is the optic cup & disc segmentation part.
 # Stage 0: Coarse segmentation: For OD
@@ -21,7 +22,7 @@ class MyDataLoader(AbstractDataLoader):
     def load(self):
 
         train_preprocess = transforms.Compose([
-            transforms.Resize((self.args.size, self.args.size)),
+            transforms.Resize((self.args.size, self.args.size), interpolation=NEAREST),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
@@ -30,14 +31,13 @@ class MyDataLoader(AbstractDataLoader):
         ])
         train_gt_preprocess = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((self.args.size, self.args.size)),
+            transforms.Resize((self.args.size, self.args.size), interpolation=NEAREST),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            transforms.ToTensor(),
         ])
 
         if self.args.dataset == 'ORIGA':
-            dataset = ORIGIADataset(self.args.data_dir,
+            dataset = ORIGIADataset(args, self.args.data_dir,
                                     train_preprocess, train_gt_preprocess, self.args.stage)
         else:
             raise NotImplementedError('{} dataset not implemented yet'
@@ -54,6 +54,21 @@ class MyDataLoader(AbstractDataLoader):
                                     shuffle=False, num_workers=self.args.n_threads)
         test_dataloader = DataLoader(test_dataset, batch_size=self.args.batch_size,
                                      shuffle=False, num_workers=self.args.n_threads)
+        '''import numpy as np
+        from utils import UnNormalize
+        from matplotlib.pyplot import show, imshow
+        for batch in train_dataloader:
 
-
+            imgs, label = batch[0], \
+                         batch[1]
+            for i in range(imgs.shape[0]):
+                img = imgs[i, ...]
+                img = UnNormalize(self.args.mean,
+                            self.args.std)(img).permute(1, 2, 0).cpu().numpy()
+                img = (img * 255).astype(np.uint8)
+                print(np.unique(img))
+                imshow(img)
+                show()'''
         return train_dataloader, val_dataloader, test_dataloader
+
+

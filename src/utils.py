@@ -38,8 +38,10 @@ def accuracy(predictions, targets, c_matrix=None, supervised=False, regression=F
         return correct / len(predicted)
 
 def seg_accuracy(predictions, targets, supervised=False, regression=False):
-
-    predicted = torch.argmax(predictions, dim=1).cuda().long().flatten()
+    if len(predictions.shape) == 4:
+        predicted = torch.argmax(predictions, dim=1).cuda().long().flatten()
+    else:
+        predicted = predictions.cuda().long().flatten()
     targets = targets.data.flatten()
     correct = (predicted == targets).sum().item()
     if supervised:

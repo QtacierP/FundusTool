@@ -19,7 +19,7 @@ args.add_argument('--stage', type=int, default=0, help='')
 args.add_argument('--decay_rate', type=float, default=1.0, help='')
 
 # Training option
-args.add_argument('--model', type=str, default='InceptionV3', help='Network')
+args.add_argument('--model', type=str, default='unet', help='Network')
 args.add_argument('--resume', action='store_true', help='resume')
 args.add_argument('--test', action='store_true', help='Test')
 args.add_argument('--regression', action='store_true', help='regerssion mode')

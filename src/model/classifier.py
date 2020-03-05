@@ -61,6 +61,7 @@ class MyModel(AbstractModel):
                 x, y = batch
                 x = x.cuda()
                 y = y.long().cuda()
+
                 # Forward
                 pred = self.model(x)
                 loss = self.loss(pred, y)

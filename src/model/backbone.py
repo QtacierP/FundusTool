@@ -147,8 +147,8 @@ class UNet(nn.Module):
                         nn.ReLU(inplace=True)])
             filters = out_filters
             out_filters //= 2
-        if num_classes == 1:
-            tail = [nn.Conv2d(filters, num_classes, kernel_size=3, padding=1),
+        if num_classes == 2:
+            tail = [nn.Conv2d(filters, 1, kernel_size=3, padding=1),
                     nn.Sigmoid()]
         else:
             tail = [nn.Conv2d(filters, num_classes, kernel_size=3, padding=1)]

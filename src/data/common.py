@@ -37,16 +37,16 @@ class AbstractDataLoader():
 
 
 class ORIGIADataset(torch.utils.data.Dataset):
-    def __init__(self, root, transforms, gt_transforms, stage=0):
+    def __init__(self,args, root, transforms, gt_transforms, stage=0):
         super(ORIGIADataset, self).__init__()
         self.root = root
+        self.args = args
         self.transforms = transforms
         self.gt_transforms = gt_transforms
         self.imgs_path =  os.path.join(root, 'images_{}'.format(stage))
         self.labels_path = os.path.join(root, 'gts_{}'.format(stage))
         self.imgs_list =  sorted(glob.glob(os.path.join(self.imgs_path, '*.jpg')))
         self.labels_list =  sorted(glob.glob(os.path.join(self.labels_path, '*.mat')))
-
 
     def __len__(self):
         return len(self.imgs_list)
@@ -57,13 +57,16 @@ class ORIGIADataset(torch.utils.data.Dataset):
         # Keep the same transformation
         seed = np.random.randint(999999999)
         random.seed(seed)
-
         # TODO: There exists a bug, when you use ToTensor in transform.
         # TODO: The value will be changed in label
         label = np.asarray(self.gt_transforms(label))
         label = torch.from_numpy(label)
+        if self.args.n_classes == 2:  # Convert to binary map
+            label = torch.where(label > 0,
+                                torch.ones_like(label), torch.zeros_like(label))
         random.seed(seed)
         img = self.transforms(img)
+
 
         return img, label
 

@@ -10,6 +10,7 @@ import os
 from imageio import imsave
 from tqdm import tqdm
 from utils import UnNormalize
+import cv2
 
 
 class MyModel(AbstractModel):
@@ -26,7 +27,10 @@ class MyModel(AbstractModel):
         if self.args.regression:
             self.loss = nn.L1Loss().cuda()
         else:
-            self.loss = nn.CrossEntropyLoss().cuda()
+            if self.args.n_classes == 2:
+                self.loss = nn.BCELoss().cuda()
+            else:
+                self.loss = nn.CrossEntropyLoss().cuda()
         if self.args.n_gpus > 1:
             self.model = nn.DataParallel(self.model)
 
@@ -55,10 +59,10 @@ class MyModel(AbstractModel):
                 self.optimizer.zero_grad()
                 x, y = batch
                 x = x.cuda()
-                y = torch.squeeze(y.long().cuda(), dim=1)
+                y = y.long().cuda()
                 # Forward
                 pred = self.model(x)
-                loss = self.loss(pred, y)
+                loss = self.loss(pred, y.float())
                 loss.backward()
                 acc, correct = seg_accuracy(pred, y, supervised=True,
                                             regression=self.args.regression)
@@ -70,13 +74,16 @@ class MyModel(AbstractModel):
                 losses['disc_dice'] = overall_dice.detach().cpu().numpy()
                 losses['cup_dice'] = cup_dice.detach().cpu().numpy()
                 logger.on_batch_end(losses)
-            val_acc, val_disc_dice, val_cup_dice,  = self.test(val_dataloader, val=True)
+
+            vis = True
+
+            val_acc, val_disc_dice, val_cup_dice,  = self.test(val_dataloader, val=True, vis=vis)
             metric = {'val_accuracy': val_acc, 'val_disc_dice': val_disc_dice,
                       'val_cup_dice': val_cup_dice}
             logger.on_epoch_end(metric)
         logger.on_train_end()
 
-    def test(self, test_dataloader, val=False):
+    def test(self, test_dataloader, val=False, vis=True):
         self.model.eval()
         torch.set_grad_enabled(False)
         total = 0
@@ -91,16 +98,22 @@ class MyModel(AbstractModel):
         for test_data in tqdm(test_dataloader):
             x, y = test_data
             x, y = x.cuda(), y.long().cuda()
-            image = UnNormalize(self.args.mean,
-                                 self.args.std)(x)
-            images += [image.permute(0, 2, 3, 1).cpu().numpy()[i, ...]
-                       for i in range(y.size(0))]
-            gts += [y.permute(0, 2, 3, 1).cpu().numpy()[i, ...]
-                       for i in range(y.size(0))]
+            if vis:
+                un = UnNormalize(self.args.mean,
+                                     self.args.std)
+                images += [un(x[i, ...]).permute(1, 2, 0).cpu().numpy()
+                           for i in range(y.size(0))]
+                gts += [y.cpu().numpy()[i, ...]
+                           for i in range(y.size(0))]
             y_pred = self.model(x)
-            softmax_pred = nn.Softmax(dim=1)(y_pred)
-            preds += [softmax_pred.detach().permute(0, 2, 3, 1).cpu().numpy()[i, ...]
-                       for i in range(y.size(0))]
+
+            if vis:
+                if self.args.n_classes >= 2: # Regularize to [0, 1]
+                    softmax_pred = nn.Softmax(dim=1)(y_pred)
+                else:
+                    softmax_pred = y_pred
+                preds += [softmax_pred.detach()[i, ...].permute(1, 2, 0).cpu().numpy()
+                           for i in range(y.size(0))]
             total += y.size(0)
             correct += seg_accuracy(y_pred, y,regression=self.args.regression) * y.size(0)
             for i in range(2):
@@ -121,7 +134,8 @@ class MyModel(AbstractModel):
         print('')
         self.model.train()
         torch.set_grad_enabled(True)
-        self._vis(images, gts=gts, preds=preds, val=val)
+        if vis:
+            self._vis(images, gts=gts, preds=preds, val=val)
         return acc , dice_list[0].detach().cpu().numpy(), dice_list[1].detach().cpu().numpy()
 
     def _vis(self, images, gts, preds, out_dir=None, val=False):
@@ -133,14 +147,23 @@ class MyModel(AbstractModel):
                 out_dir = os.path.join(self.args.model_path, 'test_samples')
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
-
         # Convert gts
         print('Saving samples ...')
         for i in tqdm(range(len(images))):
-
             image = (images[i] * 255).astype(np.uint8)
-            gt = (convert_to_one_hot(gts[i], c=3) * 255).astype(np.uint8)
+            from sklearn.metrics import accuracy_score
+            gt = (gts[i] * 255).astype(np.uint8)
             pred = (preds[i] * 255).\
                 astype(np.uint8)
+
+            if gt.shape[-1] == 1 and len(gt.shape) == 3:
+                gt = np.squeeze(gt, axis=-1)
+            if pred.shape[-1] == 1 and len(pred.shape) == 3:
+                pred = np.squeeze(pred, axis=-1)
+            if len(gt.shape) == 2:
+                gt = cv2.cvtColor(gt, cv2.COLOR_GRAY2RGB)
+            if len(pred.shape) == 2:
+                pred = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB)
+
             result = np.hstack((image, gt, pred))
             imsave(os.path.join(out_dir, '{}.jpg'.format(i)), result)
