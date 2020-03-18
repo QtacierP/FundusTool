@@ -19,6 +19,7 @@ args.add_argument('--n_classes', type=int, default=5, help='')
 args.add_argument('--size', type=int, default=256, help='')
 args.add_argument('--crop_size', type=int, default=64, help='')
 args.add_argument('--stage', type=int, default=1, help='')
+args.add_argument('--enhanced', action='store_true', help='use enhanced dataset')
 args.add_argument('--decay_rate', type=float, default=1.0, help='')
 
 # Training option
@@ -43,13 +44,17 @@ args = args.parse_args()
 
 def get_template(args):
     # Get the template of the dataset
+    if args.enhanced:
+        extra = '_enhanced'
+    else:
+        extra = ''
     if args.task == 'optic':
         # Need consider the stage in optic segmentation
         args.model_path = os.path.join(args.save, args.task,
-                                       args.dataset + '_{}_{}'.format(args.size, args.stage), args.model)
+                                       args.dataset + '_{}_{}{}'.format(args.size, args.stage, extra), args.model)
     else:
         args.model_path = os.path.join(args.save, args.task,
-                                   args.dataset + '_{}'.format(args.size), args.model)
+                                   args.dataset + '_{}{}'.format(args.size, extra), args.model)
     if not os.path.exists(args.model_path):
         os.makedirs(args.model_path)
     args.checkpoint = args.model_path + '/' + 'checkpoints/'
@@ -67,6 +72,8 @@ def get_template(args):
         else:
             args.mean = [0.5]
             args.std = [0.5]
+    if args.test:
+        args.crop_size = args.size
     n = args.size // args.crop_size
     if n > 2:
         print('[Info] Use patch mode, each image is divided into {} x {}'.format(n, n))

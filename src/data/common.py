@@ -118,10 +118,13 @@ class DRIVEDataset(torch.utils.data.Dataset):
         self.step = step
         self.transforms = transforms
         self.gt_transforms = gt_transforms
-        self.imgs_path =  os.path.join(root, 'origin')
+        if args.enhanced:
+            self.imgs_path = os.path.join(root, 'enhanced_origin')
+        else:
+            self.imgs_path =  os.path.join(root, 'origin')
         self.labels_path = os.path.join(root, 'groundtruth')
-        self.imgs_list =  sorted(glob.glob(os.path.join(self.imgs_path, '*.tif')))
-        self.labels_list =  sorted(glob.glob(os.path.join(self.labels_path, '*.tif')))
+        self.imgs_list =  sorted(glob.glob(os.path.join(self.imgs_path, '*')))
+        self.labels_list =  sorted(glob.glob(os.path.join(self.labels_path, '*')))
 
     def __len__(self):
         return len(self.imgs_list) * self.step

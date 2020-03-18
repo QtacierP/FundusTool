@@ -1,5 +1,10 @@
 # Fundus Tool For repo [RetinaEnhance](https://github.com/QtacierP/RetinaEnhanced)
 ----
+
+## Update Recently
+> - Patch Mode
+> - Enhancement verification
+
 A very simple repo for pre-trained model used to enhance retina fundus. There are mainly three parts:
 > - DR Classify  (implement a simple version)
 > - Vessel Segmentation (Some bugs need to fix)
