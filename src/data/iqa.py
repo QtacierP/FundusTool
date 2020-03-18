@@ -1,6 +1,6 @@
 from data.common import AbstractDataLoader, \
     ScheduledWeightedSampler, PeculiarSampler, \
-    make_weights_for_balanced_classes, KrizhevskyColorAugmentation
+    make_weights_for_balanced_classes, KrizhevskyColorAugmentation, IQADataset
 import os
 from torchvision import datasets, transforms
 import pandas as pd
@@ -66,14 +66,12 @@ class MyDataLoader(AbstractDataLoader):
         val_path = os.path.join(self.args.data_dir, 'val')
         # Compile Pre-processing
         train_preprocess = transforms.Compose([
-
             transforms.Resize((self.args.size, self.args.size)),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(self.args.mean,
                                  self.args.std),
-            KrizhevskyColorAugmentation(sigma=0.5)
         ])
         test_preprocess = transforms.Compose([
             transforms.Resize((self.args.size, self.args.size)),
@@ -83,19 +81,20 @@ class MyDataLoader(AbstractDataLoader):
         ])
 
         # Compile Dataset
-        train_dataset = datasets.ImageFolder(train_path, train_preprocess)
-        test_dataset = datasets.ImageFolder(test_path, test_preprocess)
-        val_dataset = datasets.ImageFolder(val_path, test_preprocess)
-        weights, weights_per_class = make_weights_for_balanced_classes(train_dataset.imgs, len(train_dataset.classes))
+        train_dataset = IQADataset(args, train_path, train_preprocess)
+        test_dataset = IQADataset(args, test_path, test_preprocess)
+        val_dataset = IQADataset(args, val_path, test_preprocess)
+
         print('[Train]: ', train_dataset.__len__())
         print('[Val]: ', val_dataset.__len__())
         print('[Test]: ', test_dataset.__len__())
+
+        weights, weights_per_class = make_weights_for_balanced_classes(train_dataset.imgs, len(train_dataset.classes))
         #print('Use sample weights')
         weights = torch.DoubleTensor(weights)
         # Compile Sampler
         args.weight = torch.FloatTensor(weights_per_class)
         # This sampler only works for
-
         weighted_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights), replacement=True)
         #weighted_sampler = None
         #train_targets = [sampler[1] for sampler in train_dataset.samples]

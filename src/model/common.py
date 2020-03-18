@@ -1,4 +1,4 @@
-
+import os
 import torch
 from torch import Tensor
 import torch.nn.functional as F
@@ -9,6 +9,8 @@ class AbstractModel():
         self._init_model()
         self.callbacks = []
         self._init_callbacks()
+        if args.test or args.resume:
+            self.load()
 
     def _init_model(self):
         print("[INFO] Initialize model...")
@@ -23,6 +25,17 @@ class AbstractModel():
     def test(self, test_dataloader):
         pass
 
+    def load(self):
+        if self.args.n_gpus > 1:
+            module = self.model.module
+        else:
+            module = self.model
+        if self.args.resume:
+            module.load_state_dict(torch.load(os.path.join(self.args.model_path,
+                                             '{}_last.pt'.format(self.args.model))))
+        elif self.args.test:
+            module.load_state_dict(torch.load(os.path.join(self.args.model_path,
+                                             '{}_best.pt'.format(self.args.model))))
 class FocalLoss(torch.nn.Module):
     def __init__(self, gamma=0, alpha=None, size_average=True):
         super(FocalLoss, self).__init__()

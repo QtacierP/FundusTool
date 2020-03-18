@@ -7,6 +7,10 @@ from PIL import Image
 from scipy.io import loadmat
 from torchvision.transforms import ToPILImage
 import numpy as np
+import skimage.io
+import torchvision
+from torchvision.datasets.folder import default_loader, IMG_EXTENSIONS
+import cv2
 
 
 
@@ -35,6 +39,40 @@ class AbstractDataLoader():
         # Load your dataset
         pass
 
+class IQADataset(torchvision.datasets.DatasetFolder):
+    def __init__(self, args, root, transform=None, target_transform=None,
+                 loader=default_loader, is_valid_file=None):
+        self.args = args
+        super(IQADataset, self).__init__(root, loader, IMG_EXTENSIONS if is_valid_file is None else None,
+                                          transform=transform,
+                                          target_transform=target_transform,
+                                          is_valid_file=is_valid_file)
+        self.imgs = self.samples
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: (sample, target) where target is class_index of the target class.
+        """
+        path, target = self.samples[index]
+        sample = skimage.io.imread(path)
+        if self.args.n_colors == 1:
+            '''sample = cv2.cvtColor(sample, cv2.COLOR_RGB2GRAY)
+            clahe = cv2.createCLAHE()
+            sample = clahe.apply(sample)'''
+            sample = 0.25 * sample[..., 0] + 0.75 * sample[..., 1]
+
+        sample = Image.fromarray(sample)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target
+
 
 class ORIGIADataset(torch.utils.data.Dataset):
     def __init__(self,args, root, transforms, gt_transforms, stage=0):
@@ -60,7 +98,9 @@ class ORIGIADataset(torch.utils.data.Dataset):
         # TODO: There exists a bug, when you use ToTensor in transform.
         # TODO: The value will be changed in label
         label = np.asarray(self.gt_transforms(label))
+        #label = np.expand_dims(label, axis=-1)
         label = torch.from_numpy(label)
+
         if self.args.n_classes == 2:  # Convert to binary map
             label = torch.where(label > 0,
                                 torch.ones_like(label), torch.zeros_like(label))
@@ -70,7 +110,35 @@ class ORIGIADataset(torch.utils.data.Dataset):
 
         return img, label
 
+class DRIVEDataset(torch.utils.data.Dataset):
+    def __init__(self,args, root, transforms, gt_transforms, step=1):
+        super(DRIVEDataset, self).__init__()
+        self.root = root
+        self.args = args
+        self.step = step
+        self.transforms = transforms
+        self.gt_transforms = gt_transforms
+        self.imgs_path =  os.path.join(root, 'origin')
+        self.labels_path = os.path.join(root, 'groundtruth')
+        self.imgs_list =  sorted(glob.glob(os.path.join(self.imgs_path, '*.tif')))
+        self.labels_list =  sorted(glob.glob(os.path.join(self.labels_path, '*.tif')))
 
+    def __len__(self):
+        return len(self.imgs_list) * self.step
+
+    def __getitem__(self, index):
+        img = Image.open(self.imgs_list[index % len(self.imgs_list)])
+        label = Image.open(self.labels_list[index % len(self.imgs_list)])
+        # Keep the same transformation
+        seed = np.random.randint(999999999)
+        random.seed(seed)
+        label = self.gt_transforms(label)
+        random.seed(seed)
+        img = self.transforms(img)
+        if self.args.n_colors == 1:
+            img = 0.25 * img[0,  ...]  + 0.75 * img[1, ...]
+            img = torch.unsqueeze(img, dim=0)
+        return img, label
 
 class ScheduledWeightedSampler(Sampler):
     def __init__(self, num_samples, train_targets, initial_weight=BALANCE_WEIGHTS,

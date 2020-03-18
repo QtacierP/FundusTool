@@ -107,7 +107,7 @@ class MyDataLoader(AbstractDataLoader):
         val_dataset = datasets.ImageFolder(val_path, test_preprocess)
         weights, weights_per_class  = make_weights_for_balanced_classes(train_dataset.imgs, len(train_dataset.classes))
         print('Use sample weights')
-        weights= torch.DoubleTensor(weights_per_class)
+        #weights= torch.DoubleTensor(weights)
         # Compile Sampler
         print('[Train]: ', train_dataset.__len__())
         print('[Val]: ', val_dataset.__len__())

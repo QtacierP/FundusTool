@@ -3,11 +3,13 @@ from option import args
 from model import get_model
 import os
 from data import get_dataloder
-import tensorflow_datasets as tfd
 import numpy as np
 
 # Activate eager mode to use multiple GPU
 tf.compat.v1.disable_eager_execution()
+
+
+
 
 
 def main():

@@ -58,16 +58,23 @@ class MyDataLoader(AbstractDataLoader):
         from utils import UnNormalize
         from matplotlib.pyplot import show, imshow
         for batch in train_dataloader:
-
-            imgs, label = batch[0], \
-                         batch[1]
+            imgs, labels = batch[0], \
+                           batch[1]
             for i in range(imgs.shape[0]):
                 img = imgs[i, ...]
+                label = labels[i, ...]
                 img = UnNormalize(self.args.mean,
-                            self.args.std)(img).permute(1, 2, 0).cpu().numpy()
+                                  self.args.std)(img).permute(1, 2, 0).cpu().numpy()
+
+                label = label.cpu().numpy()
+                label = (label * 255).astype(np.uint8)
                 img = (img * 255).astype(np.uint8)
-                print(np.unique(img))
+                label = np.squeeze(label, axis=-1)
+                print(np.unique(label))
                 imshow(img)
+                show()
+                print(np.sum(label) / 255 / (label.shape[0] * label.shape[1]))
+                imshow(label)
                 show()'''
         return train_dataloader, val_dataloader, test_dataloader
 
