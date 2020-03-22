@@ -12,6 +12,9 @@ from tqdm import tqdm
 from utils import UnNormalize
 import cv2
 from sklearn.metrics import roc_auc_score, f1_score
+from data.common import TestSet
+from torchvision import transforms
+from torch.utils.data import DataLoader
 
 class MyModel(AbstractModel):
     def __init__(self, args):
@@ -97,7 +100,7 @@ class MyModel(AbstractModel):
             logger.on_epoch_end(metric)
         logger.on_train_end()
 
-    def test(self, test_dataloader, val=False, vis=True):
+    def test(self, test_dataloader, out_dir, val=False, vis=True):
         self.model.eval()
         torch.set_grad_enabled(False)
         total = 0
@@ -109,53 +112,78 @@ class MyModel(AbstractModel):
         images = []
         preds = []
         gts = []
+        only_test = False
+        if isinstance(test_dataloader, str):
+            only_test = True
+            print('Load images from {}'.format(test_dataloader))
+            transformation = transforms.Compose([transforms.Resize((self.args.size, self.args.size)),
+                                                 transforms.ToTensor(),
+                                                 transforms.Normalize(self.args.mean, self.args.std),
+                                                 ])
+            dataset = TestSet(self.args, test_dataloader, transformation)
+            test_dataloader = DataLoader(dataset, batch_size=self.args.batch_size,
+                                     shuffle=False, num_workers=self.args.n_threads)
         for test_data in tqdm(test_dataloader):
             x, y = test_data
-            x, y = x.cuda(), y.long().cuda()
+            x= x.cuda()
+            if not only_test:
+                y = y.long().cuda()
             if vis:
                 temp_x = x.clone()
-                temp_y = y.clone()
                 un = UnNormalize(self.args.mean,
                                      self.args.std)
-                if len(y.shape) == 3:
-                    temp_y = torch.unsqueeze(temp_y.clone(), dim=1)
+                if not only_test:
+                    temp_y = y.clone()
+                    if len(y.shape) == 3:
+                        temp_y = torch.unsqueeze(temp_y.clone(), dim=1)
                 images += [un(temp_x[i, ...]).permute(1, 2, 0).cpu().numpy()
-                           for i in range(temp_y.size(0))]
-                gts += [temp_y[i, ...].permute(1, 2, 0).cpu().numpy()
-                           for i in range(temp_y.size(0))]
+                           for i in range(x.size(0))]
+                if only_test:
+                    gts += [y[i] for i in range(x.size(0))]
+                else:
+                    gts += [temp_y[i, ...].permute(1, 2, 0).cpu().numpy()
+                               for i in range(x.size(0))]
             y_pred = self.model(x)
-
             if vis:
                 if self.args.n_classes > 0: # Regularize to [0, 1]
                     softmax_pred = nn.Softmax(dim=1)(y_pred.clone())
                 else:
                     softmax_pred = y_pred.clone()
                 preds += [softmax_pred.detach()[i, ...].permute(1, 2, 0).cpu().numpy()
-                           for i in range(y.size(0))]
-            total += y.size(0)
-            correct += seg_accuracy(y_pred, y,regression=self.args.regression) * y.size(0)
+                           for i in range(x.size(0))]
+            if not only_test:
+                total += x.size(0)
+                correct += seg_accuracy(y_pred, y,regression=self.args.regression) * x.size(0)
+                for i in range(2):
+                    tp_, tn_, fp_, fn_, _ = dice(y, y_pred, supervised=True, target=i)
+                    tp[i] += tp_
+                    tn[i] += tn_
+                    fp[i] += fp_
+                    fn[i] += fn_
+        if only_test and out_dir is None:
+            epsilon = 1e-7
+            dice_list = []
             for i in range(2):
-                tp_, tn_, fp_, fn_, _ = dice(y, y_pred, supervised=True, target=i)
-                tp[i] += tp_
-                tn[i] += tn_
-                fp[i] += fp_
-                fn[i] += fn_
-        epsilon = 1e-7
-        dice_list = []
-        for i in range(2):
-            precision = tp[i] / (tp[i] + fp[i] + epsilon)
-            recall = tp[i] / (tp[i] + fn[i] + epsilon)
-            dice_list.append(2 * (precision * recall) /
-                        (precision + recall + epsilon))
-        acc = round(correct / total, 4)
+                precision = tp[i] / (tp[i] + fp[i] + epsilon)
+                recall = tp[i] / (tp[i] + fn[i] + epsilon)
+                dice_list.append(2 * (precision * recall) /
+                            (precision + recall + epsilon))
+            acc = round(correct / total, 4)
         print('')
         self.model.train()
         torch.set_grad_enabled(True)
-        if vis:
-            self._vis(images, gts=gts, preds=preds, val=val)
-        return acc , dice_list[0].detach().cpu().numpy(), dice_list[1].detach().cpu().numpy()
 
-    def _vis(self, images, gts, preds, out_dir=None, val=False):
+        if not only_test:
+            if vis:
+                self._vis(images, gts=gts, preds=preds, val=val, out_dir=out_dir)
+            return acc , dice_list[0].detach().cpu().numpy(), \
+                   dice_list[1].detach().cpu().numpy()
+        else:
+
+            self._vis(images, gts=gts, preds=preds, val=val, out_dir=out_dir, name_list=gts)
+            return
+
+    def _vis(self, images, gts, preds, out_dir=None, val=False, name_list=None):
         # TODO: Only works for OD & OC segmenting
         if out_dir is None:
             if val:
@@ -164,36 +192,46 @@ class MyModel(AbstractModel):
                 out_dir = os.path.join(self.args.model_path, 'test_samples')
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
-        gts = np.asarray(gts)
-        preds = np.asarray(preds)
-        gts_label = gts.flatten()
-        preds_label = np.argmax(preds, axis=-1).flatten()
-        preds_score = preds[..., 1].flatten()
-        dice = f1_score(gts_label, preds_label)
-        auc = roc_auc_score(gts_label, preds_score)
-        if not val:
-            print('dice ', dice)
-            print('auc ', auc)
+        quant = True
+        if name_list is not None:
+            quant = False
+        if quant:
+            gts = np.asarray(gts)
+            preds = np.asarray(preds)
+            gts_label = gts.flatten()
+            preds_label = np.argmax(preds, axis=-1).flatten()
+            preds_score = preds[..., 1].flatten()
+            dice = f1_score(gts_label, preds_label)
+            auc = roc_auc_score(gts_label, preds_score)
+            if not val:
+                print('dice ', dice)
+                print('auc ', auc)
         # Convert gts
         print('Saving samples ...')
+        if name_list is None:
+            name_list = range(len(images))
         for i in tqdm(range(len(images))):
             image = (images[i] * 255).astype(np.uint8)
-            gt = (gts[i] / (self.args.n_classes - 1) * 255).astype(np.uint8)
+            if quant:
+                gt = (gts[i] / (self.args.n_classes - 1) * 255).astype(np.uint8)
             pred = (preds[i] / (self.args.n_classes - 1) * 255).\
                 astype(np.uint8)
             if pred.shape[-1] == 2 and len(pred.shape) == 3:
                 pred = pred[..., 1]
-            if gt.shape[-1] == 1 and len(gt.shape) == 3:
+            if quant and gt.shape[-1] == 1 and len(gt.shape) == 3:
                 gt = np.squeeze(gt, axis=-1)
             if pred.shape[-1] == 1 and len(pred.shape) == 3:
                 pred = np.squeeze(pred, axis=-1)
             if image.shape[-1] == 1 and len(image.shape) == 3:
                 image = np.squeeze(image, axis=-1)
-            if len(gt.shape) == 2:
+            if quant and len(gt.shape) == 2:
                 gt = cv2.cvtColor(gt, cv2.COLOR_GRAY2RGB)
             if len(pred.shape) == 2:
                 pred = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB)
             if len(image.shape) == 2:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-            result = np.hstack((image, gt, pred))
-            imsave(os.path.join(out_dir, '{}.jpg'.format(i)), result)
+            if quant:
+                result = np.hstack((image, gt, pred))
+            else:
+                result = np.hstack((image, pred))
+            imsave(os.path.join(out_dir, '{}.jpg'.format(name_list[i])), result)

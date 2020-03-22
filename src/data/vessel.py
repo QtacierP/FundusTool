@@ -37,7 +37,7 @@ class MyDataLoader(AbstractDataLoader):
             transforms.ToTensor(),
         ])
 
-        test_preprocess =  transforms.Compose([
+        test_preprocess = transforms.Compose([
             transforms.Resize((self.args.size, self.args.size), interpolation=NEAREST),
             transforms.ToTensor(),
             transforms.Normalize(self.args.mean,

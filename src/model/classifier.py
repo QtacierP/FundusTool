@@ -50,7 +50,7 @@ class MyModel(AbstractModel):
         logger = MyLogger(self.args, self.args.epochs, self.args.batch_size,
                           losses_name, step=step, model=self.model,
                           metric=self.args.metric, optimizer=self.optimizer,
-                          warmup_scheduler=warmup_scheduler, lr_scheduler=lr_scheduler)
+                          warmup_scheduler=warmup_scheduler, lr_scheduler=lr_scheduler, weighted_sampler=train_dataloader.sampler)
         logger.on_train_begin()
         for epoch in range(self.args.epochs):
             over_all = 0
@@ -62,7 +62,6 @@ class MyModel(AbstractModel):
                 x, y = batch
                 x = x.cuda()
                 y = y.long().cuda()
-                print(y.shape)
                 # Forward
                 pred = self.model(x)
                 loss = self.loss(pred, y)
