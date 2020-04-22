@@ -24,14 +24,22 @@ def resnet101_backbone(num_classes, n_colors=3, regression=False):
 
     return base_model.cuda()
 
-def resnet50_backbone(num_classes, n_colors=3, regression=False):
+def resnet50_backbone(num_classes, n_colors=3, regression=False, size=512):
     base_model = resnet50(pretrained=True)
     base_model.conv1 = nn.Conv2d(n_colors, 64, kernel_size=7, stride=2, padding=3,bias=False)
     num_ftrs = base_model.fc.in_features
-    if regression:
-        base_model.fc =  nn.Linear(num_ftrs, 1)
+    if size <= 512:
+        if regression:
+            base_model.fc =  nn.Linear(num_ftrs, 1)
+        else:
+            base_model.fc = nn.Linear(num_ftrs, num_classes)
     else:
-        base_model.fc = nn.Linear(num_ftrs, num_classes)
+        module = nn.Sequential( nn.Conv2d(num_ftrs, num_ftrs, kernel_size=7, stride=2, padding=3, bias=False),
+                                nn.BatchNorm2d(num_ftrs))
+        if regression:
+            base_model.fc =  nn.Sequential(module, nn.Linear(num_ftrs, 1))
+        else:
+            base_model.fc = nn.Sequential(module, nn.Linear(num_ftrs, num_classes))
 
     return base_model.cuda()
 

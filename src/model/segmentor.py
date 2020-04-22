@@ -100,7 +100,9 @@ class MyModel(AbstractModel):
             logger.on_epoch_end(metric)
         logger.on_train_end()
 
-    def test(self, test_dataloader, out_dir, val=False, vis=True):
+    def test(self, test_dataloader, out_dir=None, val=False, vis=True):
+        if not self.args.test:
+            self.load()
         self.model.eval()
         torch.set_grad_enabled(False)
         total = 0
@@ -112,7 +114,7 @@ class MyModel(AbstractModel):
         images = []
         preds = []
         gts = []
-        only_test = False
+        only_test = False # Without evaluation
         if isinstance(test_dataloader, str):
             only_test = True
             print('Load images from {}'.format(test_dataloader))
@@ -160,7 +162,7 @@ class MyModel(AbstractModel):
                     tn[i] += tn_
                     fp[i] += fp_
                     fn[i] += fn_
-        if only_test and out_dir is None:
+        if not only_test and out_dir is None:
             epsilon = 1e-7
             dice_list = []
             for i in range(2):
@@ -201,9 +203,10 @@ class MyModel(AbstractModel):
             gts_label = gts.flatten()
             preds_label = np.argmax(preds, axis=-1).flatten()
             preds_score = preds[..., 1].flatten()
-            dice = f1_score(gts_label, preds_label)
-            auc = roc_auc_score(gts_label, preds_score)
-            if not val:
+
+            if not val and self.args.n_classes == 2:
+                auc = roc_auc_score(gts_label, preds_score)
+                dice = f1_score(gts_label, preds_label)
                 print('dice ', dice)
                 print('auc ', auc)
         # Convert gts

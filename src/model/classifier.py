@@ -21,7 +21,7 @@ class MyModel(AbstractModel):
         elif self.args.model == 'resnet101':
             self.model = resnet101_backbone(self.args.n_classes, self.args.n_colors, self.args.regression)
         elif self.args.model == 'resnet50':
-            self.model = resnet50_backbone(self.args.n_classes, self.args.n_colors, self.args.regression)
+            self.model = resnet50_backbone(self.args.n_classes, self.args.n_colors, self.args.regression, size=args.size)
         elif self.args.model == 'simple':
             self.model = simple_classifier(self.args.n_classes, self.args.regression)
         elif 'efficient' in self.args.model:
@@ -35,7 +35,7 @@ class MyModel(AbstractModel):
         if self.args.regression:
             self.loss = nn.L1Loss().cuda()
         else:
-            self.loss = nn.CrossEntropyLoss(weight=self.args.weight).cuda()
+            self.loss = nn.CrossEntropyLoss().cuda()
         if self.args.n_gpus > 1:
             self.model = nn.DataParallel(self.model)
 

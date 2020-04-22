@@ -3,15 +3,17 @@ from torch.utils.data.sampler import Sampler
 import random
 import os
 import glob
-from PIL import Image
 from scipy.io import loadmat
-from torchvision.transforms import ToPILImage
 import numpy as np
 import skimage.io
 import torchvision
 from torchvision.datasets.folder import default_loader, IMG_EXTENSIONS
 import cv2
-
+from PIL import Image, ImageFilter
+from matplotlib.pyplot import imsave, imread
+from skimage.measure import label, regionprops
+import scipy
+import matplotlib.pyplot as plt
 
 
 BALANCE_WEIGHTS = torch.tensor([1.3609453700116234, 14.378223495702006,
@@ -75,7 +77,7 @@ class IQADataset(torchvision.datasets.DatasetFolder):
 
 
 class ORIGIADataset(torch.utils.data.Dataset):
-    def __init__(self,args, root, transforms, gt_transforms, stage=0):
+    def __init__(self,args, root, transforms, gt_transforms, stage=0, need_name=False):
         super(ORIGIADataset, self).__init__()
         self.root = root
         self.args = args
@@ -85,19 +87,21 @@ class ORIGIADataset(torch.utils.data.Dataset):
         self.labels_path = os.path.join(root, 'gts_{}'.format(stage))
         self.imgs_list =  sorted(glob.glob(os.path.join(self.imgs_path, '*.jpg')))
         self.labels_list =  sorted(glob.glob(os.path.join(self.labels_path, '*.mat')))
+        self.need_name = need_name
 
     def __len__(self):
         return len(self.imgs_list)
 
     def __getitem__(self, index):
-        img = Image.open(self.imgs_list[index])
-        label = loadmat(self.labels_list[index])['mask']
+        name = self.imgs_list[index]
+        ori_img = Image.open(name)
+        ori_label = loadmat(self.labels_list[index])['mask']
         # Keep the same transformation
         seed = np.random.randint(999999999)
         random.seed(seed)
         # TODO: There exists a bug, when you use ToTensor in transform.
         # TODO: The value will be changed in label
-        label = np.asarray(self.gt_transforms(label))
+        label = np.asarray(self.gt_transforms(ori_label))
         #label = np.expand_dims(label, axis=-1)
         label = torch.from_numpy(label)
 
@@ -105,10 +109,52 @@ class ORIGIADataset(torch.utils.data.Dataset):
             label = torch.where(label > 0,
                                 torch.ones_like(label), torch.zeros_like(label))
         random.seed(seed)
-        img = self.transforms(img)
+        img = self.transforms(ori_img)
+        if not self.need_name:
+            return img, label
+        else:
+            ori_img = cv2.resize(np.asarray(ori_img), (3072, 2048))
+            ori_label = cv2.resize(ori_label, (3072, 2048))
+            ori_label = np.expand_dims(ori_label, axis=-1)
+            return img, label, name, ori_img, ori_label
 
+class REFUGEDataset(torch.utils.data.Dataset):
+    def __init__(self, args, root, transforms, gt_transforms,
+                 task, stage=0, need_name=False):
+        super(REFUGEDataset, self).__init__()
+        self.args = args
+        self.root = root
+        self.transforms = transforms
+        self.gt_transforms = gt_transforms
+        self.need_name = need_name
+        self.imgs_path = os.path.join(root,  'images_{}'.format(stage), task)
+        self.labels_path = os.path.join(root, 'gts_{}'.format(stage), task)
+        self.imgs_list = sorted(glob.glob(os.path.join(self.imgs_path, '*.jpg')))
+        self.labels_list = sorted(glob.glob(os.path.join(self.labels_path, '*.bmp')))
 
-        return img, label
+    def __len__(self):
+        return len(self.imgs_list)
+
+    def __getitem__(self, index):
+        name = self.imgs_list[index]
+        ori_img = Image.open(name)
+        ori_label = Image.open(self.labels_list[index])
+        # Keep the same transformation
+        seed = np.random.randint(999999999)
+        random.seed(seed)
+        label = self.gt_transforms(ori_label)
+        if self.args.n_classes == 2:  # Convert to binary map
+            label = torch.where(label > 0,
+                                torch.ones_like(label), torch.zeros_like(label))
+        random.seed(seed)
+        img = self.transforms(ori_img)
+        if not self.need_name:
+            return img, label
+        else:
+            ori_img = np.asarray(ori_img)
+            ori_label = cv2.resize(ori_label, (3072, 2048))
+            ori_label = np.expand_dims(ori_label, axis=-1)
+            return img, label, name, ori_img, ori_label
 
 class TestSet(torch.utils.data.Dataset):
     def __init__(self, args, main_dir, transform):
@@ -262,3 +308,96 @@ class KrizhevskyColorAugmentation(object):
 
     def __repr__(self):
         return self.__class__.__name__ + '(sigma={})'.format(self.sigma)
+
+
+def crop_image(img):
+    img = Image.fromarray(np.uint8(img))
+    blurred = img.filter(ImageFilter.BLUR)
+    ba = np.array(blurred)
+    h, w, _ = ba.shape
+
+    if w > 1.2 * h:
+        left_max = ba[:, : w // 32, :].max(axis=(0, 1)).astype(int)
+        right_max = ba[:, - w // 32:, :].max(axis=(0, 1)).astype(int)
+        max_bg = np.maximum(left_max, right_max)
+
+        foreground = (ba > max_bg + 10).astype(np.uint8)
+        bbox = Image.fromarray(foreground).getbbox()
+        if bbox != None:
+            left, upper, right, lower = bbox
+            if right - left < 0.8 * h or lower - upper < 0.8 * h:
+                bbox = None
+    else:\
+        bbox = None
+    if bbox is None:
+        return np.asarray(img)
+    return np.asarray(img.crop(bbox))
+
+def crop_and_save(current_file, aimed_list, root_task_path, current_task_path ):
+    if current_file not in aimed_list:
+        return
+    current_file_name = os.path.join(current_task_path, current_file)
+    img = imread(current_file_name)
+    img = crop_image(img)
+    print('saving ', os.path.join(root_task_path, current_file))
+    imsave(os.path.join(root_task_path, current_file), img)
+
+'''
+========== This is for OD/OC coarse crop ===========
+'''
+def crop_OD(disc_map, ori_img, ori_gt=None, need_position=False):
+    ori_shape = np.shape(ori_img)
+    disc_map = disc_map[..., 1]
+    disc_map = BW_img(disc_map, 0.5)
+    disc_map = disc_map.astype(np.uint8)
+    disc_map = cv2.resize(disc_map, (ori_shape[1], ori_shape[0]))
+
+    regions = regionprops(label(disc_map))
+    l_h = regions[0].bbox[0]
+    h_h = regions[0].bbox[2]
+    l_w = regions[0].bbox[1]
+    h_w = regions[0].bbox[3]
+
+    h = int(h_h - l_h)
+    w = int(h_w - l_w)
+    e_w = int((max(h, w) * 2 - w) // 2)
+    e_h = int((max(h, w) * 2 - h) // 2)
+    n_l_h = l_h - e_h
+    n_h_h = h_h + e_h
+    n_l_w = l_w - e_w
+    n_h_w = h_w + e_w
+    if n_l_h < 0:
+        n_h_h -= n_l_h
+        n_l_h = 0
+    if n_h_h > ori_shape[0]:
+        n_l_h -= n_h_h - ori_shape[0]
+        n_h_h = ori_shape[0]
+    if n_l_w < 0:
+        n_h_w -= n_l_w
+        n_l_w = 0
+    if n_h_w > ori_shape[1]:
+        n_l_w -= n_h_w - ori_shape[1]
+        n_h_w = ori_shape[1]
+    mini_img = ori_img[n_l_h: n_h_h, n_l_w: n_h_w, :]
+    mini_gt = None
+    if ori_gt is not None:
+        ori_gt = np.expand_dims(ori_gt, axis=-1)
+        mini_gt = ori_gt[n_l_h: n_h_h, n_l_w: n_h_w, :]
+    if need_position:
+        return mini_img, mini_gt, [n_l_h, n_h_h, n_l_w, n_h_w]
+    return mini_img, mini_gt
+
+def BW_img(input, thresholding):
+    if input.max() > thresholding:
+        binary = input > thresholding
+    else:
+        binary = input > input.max() / 2.0
+    label_image = label(binary)
+    regions = regionprops(label_image)
+    area_list = []
+    for region in regions:
+        area_list.append(region.area)
+    if area_list:
+        idx_max = np.argmax(area_list)
+        binary[label_image != idx_max + 1] = 0
+    return scipy.ndimage.binary_fill_holes(np.asarray(binary).astype(int))

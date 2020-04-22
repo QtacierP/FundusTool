@@ -19,7 +19,7 @@ args.add_argument('--balanced', action='store_true', help='balanced dataset')
 # Processing option
 args.add_argument('--n_colors', type=int, default=3, help='')
 args.add_argument('--n_classes', type=int, default=5, help='')
-args.add_argument('--size', type=int, default=256, help='')
+args.add_argument('--size', type=int, default=1024, help='')
 args.add_argument('--crop_size', type=int, default=64, help='')
 args.add_argument('--stage', type=int, default=1, help='')
 args.add_argument('--enhanced', action='store_true', help='use enhanced dataset')

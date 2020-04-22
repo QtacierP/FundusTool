@@ -91,14 +91,14 @@ class MyDataLoader(AbstractDataLoader):
 
         weights, weights_per_class = make_weights_for_balanced_classes(train_dataset.imgs, len(train_dataset.classes))
         #print('Use sample weights')
-        weights = torch.DoubleTensor(weights)
+        #weights = torch.DoubleTensor(weights)
         # Compile Sampler
         args.weight = torch.FloatTensor(weights_per_class)
         # This sampler only works for
-        weighted_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights), replacement=True)
+        #weighted_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights), replacement=True)
         #weighted_sampler = None
-        #train_targets = [sampler[1] for sampler in train_dataset.samples]
-        #weighted_sampler = ScheduledWeightedSampler(len(train_dataset), train_targets, True)
+        train_targets = [sampler[1] for sampler in train_dataset.samples]
+        weighted_sampler = ScheduledWeightedSampler(len(train_dataset), train_targets, True)
         # Compile DataLoader
         train_dataloader = DataLoader(train_dataset, batch_size=self.args.batch_size,
                             sampler=weighted_sampler, num_workers=self.args.n_threads)

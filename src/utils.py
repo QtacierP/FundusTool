@@ -82,9 +82,10 @@ class DICELoss(nn.Module):
 def dice(y_true: torch.Tensor, y_pred: torch.Tensor, target=0, supervised=False) -> torch.Tensor:
     # Concert to flatten tensor
     if len(y_pred.shape) == 4 and y_pred.shape[1] > 1:
-        y_pred = torch.argmax(y_pred, dim=1)
-    y_pred = torch.where(y_pred >= 0.5, torch.ones_like(y_pred),
-                         torch.zeros_like(y_pred))
+        y_pred = torch.argmax(y_pred, dim=1) # Get label map
+    else:
+        y_pred = torch.where(y_pred >= 0.5, torch.ones_like(y_pred),
+                             torch.zeros_like(y_pred))
     target_pred = torch.where(y_pred == target,
                               torch.ones_like(y_pred),
                               torch.zeros_like(y_pred)).flatten()
@@ -247,3 +248,4 @@ class DiceLoss(nn.Module):
                 total_loss += dice_loss
 
         return total_loss/target.shape[1]
+

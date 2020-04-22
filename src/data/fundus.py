@@ -6,9 +6,12 @@ from torchvision import datasets, transforms
 import pandas as pd
 from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler, ConcatDataset
-
+from data.common import crop_image, crop_and_save
 import torch
 from option import args
+from matplotlib.pyplot import imread, imsave
+import multiprocessing
+
 
 
 class MyDataLoader(AbstractDataLoader):
@@ -31,7 +34,6 @@ class MyDataLoader(AbstractDataLoader):
                 if int(train_table['quality'][idx]) not in quality_list:
                     continue
                 img_name = train_table['image'][idx]
-
                 for task in ['train', 'val']:
                     for c in range(5):
                         c = str(c)
@@ -69,6 +71,103 @@ class MyDataLoader(AbstractDataLoader):
                         os.makedirs(to_path)
                     os.system('cp -r {} {}'.format(img_path, to_path))
                     print('cp  -r {} {}'.format(img_path, to_path))
+        if self.args.dataset == 'EyePac':
+            print('Prepare for EyePac')
+            root_path = '../data/fundus/kaggle'
+            aimed_path = '../data/fundus/EyePac_512'
+            target_path = '../data/fundus/EyePac'
+            for task in ['train', 'val', 'test']:
+                for c in range(5):
+                    aimed_task_path = os.path.join(aimed_path, task, str(c))
+                    aimed_list = sorted(os.listdir(aimed_task_path))
+                    if task == 'val':
+                        current = 'train'
+                    else:
+                        current = task
+                    current_task_path = os.path.join(root_path, current)
+                    current_list = sorted(os.listdir(current_task_path))
+                    root_task_path = os.path.join(target_path, task, str(c))
+                    if not os.path.exists(root_task_path):
+                        os.makedirs(root_task_path)
+                    p = multiprocessing.Pool(self.args.n_threads)
+                    for i in tqdm(range(0, len(current_list))):
+                        current_file = current_list[i]
+                        p.apply_async(crop_and_save, args=(current_file, aimed_list, root_task_path, current_task_path))
+                    print('Waiting for all subprocesses done...')
+                    p.close()
+                    p.join()
+                    print('All subprocesses done.')
+        if self.args.dataset == 'clean':
+            pre_train = '../model/iqa/EyeQ_512_512/resnet50/resnet50_best.pt'
+            from model.backbone import resnet50_backbone
+            from data.common import TestSet
+            import numpy as np
+            import pickle
+            import torch.nn as nn
+            model = resnet50_backbone(3)
+            model.load_state_dict(torch.load(pre_train))
+            if self.args.n_gpus > 1:
+                model = nn.DataParallel(model)
+            model.eval()
+            torch.set_grad_enabled(False)
+            root_path = '../data/fundus/EyePac_512'
+            target_root_path = '../data/fundus/clean'
+            if not os.path.exists(target_root_path):
+                os.makedirs(target_root_path)
+            f = open(os.path.join(target_root_path, 'logits'), 'wb')
+            logits = {}
+            for task in ['train', 'val']:
+                for c in range(5):
+                    c = str(c)
+                    task_path = os.path.join(root_path, task, c)
+                    target_path = os.path.join(target_root_path, task, c)
+                    if not os.path.exists(target_path):
+                        os.makedirs(target_path)
+                    transformation = transforms.Compose([
+                        transforms.Resize((self.args.size, self.args.size)),
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.5, 0.5, 0.5],
+                                             [0.5, 0.5, 0.5]),
+                    ])
+                    dataset = TestSet(self.args, task_path, transformation)
+                    test_dataloader = DataLoader(dataset, batch_size=self.args.batch_size,
+                                                 shuffle=False, num_workers=self.args.n_threads)
+                    for test_data in tqdm(test_dataloader):
+                        x, files = test_data
+                        x = x.cuda()
+                        scores = model(x)
+                        scores = scores.detach().cpu().numpy()
+                        for i, score in enumerate(scores):
+                            max_id = np.max(score)
+                            file_name = files[i]
+                            full_file_name = os.path.join(task_path, file_name)
+                            if max_id < 2:
+                                os.system('cp -r {} {}'.format(full_file_name, target_path))
+                                print('cp -r {} {}'.format(full_file_name, target_path))
+                            file_name = os.path.join(task, c, file_name)
+                            logits[file_name] = score
+            pickle.dump(logits, f, -1)
+            f.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     def load(self):
         train_path = os.path.join(self.args.data_dir, 'train')
         test_path = os.path.join(self.args.data_dir, 'test')
