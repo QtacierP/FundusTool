@@ -35,7 +35,7 @@ def main():
         result = model.test(test_dataloader)
         print(result)
         f = open(os.path.join(args.model_path, 'result.txt'), 'w')
-        f.write(result)
+        f.write(str(result))
         f.close()
 
     else:

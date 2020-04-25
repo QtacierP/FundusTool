@@ -139,20 +139,23 @@ class REFUGEDataset(torch.utils.data.Dataset):
         name = self.imgs_list[index]
         ori_img = Image.open(name)
         ori_label = Image.open(self.labels_list[index])
+        ori_label = np.asarray(ori_label)
+        label = ori_label // 127
+        if self.args.n_classes == 2:  # Convert to binary map
+            label = np.where(label != 2, np.ones_like(label), np.zeros_like(label))
         # Keep the same transformation
         seed = np.random.randint(999999999)
         random.seed(seed)
-        label = self.gt_transforms(ori_label)
-        if self.args.n_classes == 2:  # Convert to binary map
-            label = torch.where(label > 0,
-                                torch.ones_like(label), torch.zeros_like(label))
+        # TODO: There exists a bug, when you use ToTensor in transform.
+        # TODO: The value will be changed in label
+        label = np.asarray(self.gt_transforms(label))
+        label = torch.from_numpy(label)
         random.seed(seed)
         img = self.transforms(ori_img)
         if not self.need_name:
             return img, label
         else:
             ori_img = np.asarray(ori_img)
-            ori_label = cv2.resize(ori_label, (3072, 2048))
             ori_label = np.expand_dims(ori_label, axis=-1)
             return img, label, name, ori_img, ori_label
 
@@ -346,18 +349,16 @@ def crop_and_save(current_file, aimed_list, root_task_path, current_task_path ):
 ========== This is for OD/OC coarse crop ===========
 '''
 def crop_OD(disc_map, ori_img, ori_gt=None, need_position=False):
-    ori_shape = np.shape(ori_img)
-    disc_map = disc_map[..., 1]
+    ori_shape = np.shape(ori_gt)
     disc_map = BW_img(disc_map, 0.5)
     disc_map = disc_map.astype(np.uint8)
+    ori_img = cv2.resize(ori_img, (ori_shape[1], ori_shape[0]))
     disc_map = cv2.resize(disc_map, (ori_shape[1], ori_shape[0]))
-
     regions = regionprops(label(disc_map))
     l_h = regions[0].bbox[0]
     h_h = regions[0].bbox[2]
     l_w = regions[0].bbox[1]
     h_w = regions[0].bbox[3]
-
     h = int(h_h - l_h)
     w = int(h_w - l_w)
     e_w = int((max(h, w) * 2 - w) // 2)
@@ -400,4 +401,4 @@ def BW_img(input, thresholding):
     if area_list:
         idx_max = np.argmax(area_list)
         binary[label_image != idx_max + 1] = 0
-    return scipy.ndimage.binary_fill_holes(np.asarray(binary).astype(int))
+    return binary
