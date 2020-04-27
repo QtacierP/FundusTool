@@ -2,6 +2,10 @@ import os
 import torch
 from torch import Tensor
 import torch.nn.functional as F
+from model.backbone import UNet
+from torchvision import datasets, transforms
+from PIL.Image import NEAREST
+
 
 class AbstractModel():
     def __init__(self, args):
@@ -70,3 +74,5 @@ class FocalLoss(torch.nn.Module):
             return loss.mean()
         else:
             return loss.sum()
+
+

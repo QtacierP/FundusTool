@@ -15,6 +15,7 @@ args.add_argument('--prepare', action='store_true', help='Use detector or not')
 args.add_argument('--seed', type=int, default=0, help='')
 args.add_argument('--n_threads', type=int, default=32, help='')
 args.add_argument('--balanced', action='store_true', help='balanced dataset')
+args.add_argument('--compare', action='store_true', help='Compare wt wio enhancement')
 
 # Processing option
 args.add_argument('--n_colors', type=int, default=3, help='')
@@ -64,6 +65,7 @@ def get_template(args):
     if not os.path.exists(args.checkpoint):
         os.makedirs(args.checkpoint)
     args.data_dir = os.path.join(args.data_dir, args.task, args.dataset)
+    print(args.data_dir)
     if args.task == 'fundus':
         print('use fundus statistic')
         args.mean = [108.64628601 / 255, 75.86886597 / 255, 54.34005737 / 255]

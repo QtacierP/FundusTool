@@ -42,7 +42,6 @@ class MyDataLoader(AbstractDataLoader):
             transforms.ToTensor(),
             transforms.Normalize(self.args.mean,
                                  self.args.std),
-
         ])
 
         test_gt_preprocess = transforms.Compose([

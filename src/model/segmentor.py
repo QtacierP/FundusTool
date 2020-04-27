@@ -100,7 +100,9 @@ class MyModel(AbstractModel):
             logger.on_epoch_end(metric)
         logger.on_train_end()
 
-    def test(self, test_dataloader, out_dir=None, val=False, vis=True):
+
+    def test(self, test_dataloader, out_dir=None,
+             val=False, vis=True, eval=False):
         if not self.args.test:
             self.load()
         self.model.eval()
@@ -114,6 +116,7 @@ class MyModel(AbstractModel):
         images = []
         preds = []
         gts = []
+        target_list = [0, 2]
         only_test = False # Without evaluation
         if isinstance(test_dataloader, str):
             only_test = True
@@ -128,6 +131,7 @@ class MyModel(AbstractModel):
         for test_data in tqdm(test_dataloader):
             x, y = test_data
             x= x.cuda()
+
             if not only_test:
                 y = y.long().cuda()
             if vis:
@@ -146,23 +150,23 @@ class MyModel(AbstractModel):
                     gts += [temp_y[i, ...].permute(1, 2, 0).cpu().numpy()
                                for i in range(x.size(0))]
             y_pred = self.model(x)
-            if vis:
+            if vis or eval:
                 if self.args.n_classes > 0: # Regularize to [0, 1]
                     softmax_pred = nn.Softmax(dim=1)(y_pred.clone())
                 else:
                     softmax_pred = y_pred.clone()
                 preds += [softmax_pred.detach()[i, ...].permute(1, 2, 0).cpu().numpy()
                            for i in range(x.size(0))]
-            if not only_test:
+            if not only_test and not eval:
                 total += x.size(0)
                 correct += seg_accuracy(y_pred, y,regression=self.args.regression) * x.size(0)
                 for i in range(2):
-                    tp_, tn_, fp_, fn_, _ = dice(y, y_pred, supervised=True, target=i)
+                    tp_, tn_, fp_, fn_, _dice = dice(y, y_pred, supervised=True, target=target_list[i])
                     tp[i] += tp_
                     tn[i] += tn_
                     fp[i] += fp_
                     fn[i] += fn_
-        if not only_test and out_dir is None:
+        if not only_test and out_dir is None and not eval:
             epsilon = 1e-7
             dice_list = []
             for i in range(2):
@@ -178,12 +182,14 @@ class MyModel(AbstractModel):
         if not only_test:
             if vis:
                 self._vis(images, gts=gts, preds=preds, val=val, out_dir=out_dir)
-            return acc , dice_list[0].detach().cpu().numpy(), \
+            if eval:
+                return preds, gts, images
+            else:
+                return acc , dice_list[0].detach().cpu().numpy(), \
                    dice_list[1].detach().cpu().numpy()
         else:
-
             self._vis(images, gts=gts, preds=preds, val=val, out_dir=out_dir, name_list=gts)
-            return
+
 
     def _vis(self, images, gts, preds, out_dir=None, val=False, name_list=None):
         # TODO: Only works for OD & OC segmenting

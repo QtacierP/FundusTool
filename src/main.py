@@ -1,11 +1,11 @@
 import tensorflow as tf
-from option import args
+from option import args, get_template
 from model import get_model
 import os
 from data import get_dataloder
 import numpy as np
-
-
+from utils import get_statics
+from copy import deepcopy
 
 
 def test_f():
@@ -18,6 +18,31 @@ def test_f():
     model += tail
     model = torch.nn.Sequential(*model).cuda()
     print(model(f).shape)
+
+
+def compare():
+    print('[GPU INDEX] : ', args.gpu)
+    args.n_gpus = len(args.gpu.split(','))
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    args.test = True
+    args.task = 'optic' # Only support optic now
+    train_dataloader, val_dataloader, test_dataloader = get_dataloder(args).load()
+    unet = get_model(args)
+    e_args = deepcopy(args)
+    e_args.dataset = 'enhanced_{}'.format(args.dataset)
+    e_args.data_dir = '../data'
+    e_args = get_template(e_args)
+    e_train_dataloader, e_val_dataloader, e_test_dataloader = get_dataloder(e_args).load()
+    e_unet = get_model(e_args)
+    print(e_unet.args.dataset)
+    preds, gts, imgs = unet.test(test_dataloader, eval=True)
+    preds = np.asarray(preds)
+    gts = np.asarray(gts)
+    e_preds, e_gts, e_imgs = e_unet.test(e_test_dataloader, eval=True)
+    e_preds = np.asarray(e_preds)
+    e_gts = np.asarray(e_gts)
+    dices = get_statics(args, preds, gts, imgs)
+    e_dices = get_statics(e_args, e_preds, e_gts, e_imgs)
 
 
 
@@ -45,4 +70,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if not args.compare:
+        main()
+    else:
+        compare()

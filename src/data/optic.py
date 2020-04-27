@@ -42,9 +42,21 @@ class MyDataLoader(AbstractDataLoader):
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
         ])
+        test_preprocess = transforms.Compose([
+            transforms.Resize((self.args.size, self.args.size), interpolation=NEAREST),
+            transforms.ToTensor(),
+            transforms.Normalize(self.args.mean,
+                                 self.args.std),
+        ])
 
+        test_gt_preprocess = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((self.args.size, self.args.size), interpolation=NEAREST),
+        ])
         if self.args.dataset == 'ORIGA' or self.args.dataset == 'enhanced_ORIGA':
-
+            if self.args.test:
+                train_preprocess = test_preprocess
+                train_gt_preprocess = test_gt_preprocess
             dataset = ORIGIADataset(args, self.args.data_dir,
                                     train_preprocess, train_gt_preprocess, self.args.stage)
             N = dataset.__len__()
@@ -60,11 +72,11 @@ class MyDataLoader(AbstractDataLoader):
                                           stage=self.args.stage, task='train')
 
             val_dataset = REFUGEDataset(self.args, self.args.data_dir,
-                                          train_preprocess, train_gt_preprocess,
+                                          test_preprocess, test_gt_preprocess,
                                           stage=self.args.stage, task='val')
 
             test_dataset = REFUGEDataset(self.args, self.args.data_dir,
-                                          train_preprocess, train_gt_preprocess,
+                                          test_preprocess, test_gt_preprocess,
                                           stage=self.args.stage, task='test')
         else:
             raise NotImplementedError('{} dataset not implemented yet'

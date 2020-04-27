@@ -140,7 +140,7 @@ class REFUGEDataset(torch.utils.data.Dataset):
         ori_img = Image.open(name)
         ori_label = Image.open(self.labels_list[index])
         ori_label = np.asarray(ori_label)
-        label = ori_label // 127
+        label = 2 - ori_label // 127
         if self.args.n_classes == 2:  # Convert to binary map
             label = np.where(label != 2, np.ones_like(label), np.zeros_like(label))
         # Keep the same transformation

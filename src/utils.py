@@ -3,6 +3,13 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.metrics import roc_auc_score, f1_score
+import os
+import matplotlib.pyplot as plt
+import cv2
+from copy import deepcopy
+from tqdm import tqdm
+import heapq
 
 def normalize(imgs):
     return imgs / 127.5 - 1
@@ -248,4 +255,94 @@ class DiceLoss(nn.Module):
                 total_loss += dice_loss
 
         return total_loss/target.shape[1]
+
+
+
+def get_statics(args, preds, gts, imgs, samples=5):
+    #  Only for optic segmentation
+    assert len(preds.shape) == 4
+    assert preds.shape[-1] == 3
+    ori_preds = np.copy(preds)
+    preds = np.argmax(preds, axis=-1)
+    if len(gts.shape) == 4:
+        if gts.shape[-1] != 1:
+            gts = np.argmax(gts, axis=-1)
+    assert len(preds.shape) == 3
+    if len(gts.shape) == 4:
+        assert gts.shape[-1] == 1
+        gts = np.squeeze(gts, axis=-1)
+    dices = []
+    for i in range(2):
+        dices.append([])
+    target_list = [0 ,2]
+    N = preds.shape[0]
+    for i in tqdm(range(N)):
+        pred = preds[i, ...]
+        gt = gts[i, ...]
+        for target in range(2):
+            target_pred = np.where(pred == target_list[target], np.ones_like(pred),
+                                   np.zeros_like(pred))
+            target_gt = np.where(gt == target_list[target], np.ones_like(gt),
+                                 np.zeros_like(gt))
+            dice_ = f1_score(target_gt.flatten(), target_pred.flatten())
+            dices[target].append(dice_)
+    dice_names = ['disc_dice', 'cup_dice']
+    max_dices = [{}, {}]
+    min_dices = [{}, {}]
+    max_dice = []
+    min_dice = []
+    mean_dices = []
+    ori_dices = deepcopy(dices)
+    for i in range(2):
+        dice_list = np.asarray(dices[i])
+        mean_dices.append(np.mean(dice_list))
+        max_temp  = heapq.nlargest(samples, range(len(dice_list)), dice_list.take)
+        for id in max_temp:
+            max_dices[i][id] = dice_list[id]
+        max_dice.append(dice_list[max_temp[0]])
+        min_temp = heapq.nsmallest(samples, range(len(dice_list)), dice_list.take)
+        for id in min_temp:
+            min_dices[i][id] = dice_list[id]
+        min_dice.append(dice_list[min_temp[0]])
+
+    out_dir = '../data/experiment/optic_statics/{}'.format(args.dataset)
+    # Save part
+    for i in range(2):
+        for id in max_dices[i].keys():
+            task_dir = os.path.join(out_dir,  dice_names[i], 'max')
+            if not os.path.exists(task_dir):
+                os.makedirs(task_dir)
+            max_img = (imgs[id] * 255).astype(np.uint8)
+            max_gt = (gts[id] / (args.n_classes - 1)* 255).astype(np.uint8)
+            max_pred = (ori_preds[id] / (args.n_classes - 1) * 255).astype(np.uint8)
+            max_dice_ = max_dices[i][id]
+            file_name = os.path.join(task_dir, '{}.jpg'.format(max_dice_))
+            max_gt = cv2.cvtColor(max_gt, cv2.COLOR_GRAY2RGB)
+            result = np.hstack((max_img, max_gt, max_pred))
+            plt.imsave(file_name, result)
+        for id in min_dices[i].keys():
+            task_dir = os.path.join(out_dir, dice_names[i], 'min')
+            if not os.path.exists(task_dir):
+                os.makedirs(task_dir)
+            min_img = (imgs[id] * 255).astype(np.uint8)
+            min_gt = (gts[id]  / (args.n_classes - 1) * 255).astype(np.uint8)
+            min_pred = (ori_preds[id] / (args.n_classes - 1) * 255).astype(np.uint8)
+            min_dice_ = min_dices[i][id]
+            file_name = os.path.join(task_dir, '{}.jpg'.format(min_dice_))
+            min_gt = cv2.cvtColor(min_gt, cv2.COLOR_GRAY2RGB)
+            result = np.hstack((min_img, min_gt, min_pred))
+            plt.imsave(file_name, result)
+    print(mean_dices)
+    print(min_dice)
+    f = open(os.path.join(out_dir, 'result.txt'), 'w')
+    for i in range(2):
+        sigma = min(mean_dices[i] - min_dice[i],
+                    max_dice[i] - mean_dices[i])
+        f.write('{}: {} +- {} \n'.format(dice_names[i], mean_dices[i], sigma))
+    f.close()
+    return ori_dices
+
+
+
+
 
