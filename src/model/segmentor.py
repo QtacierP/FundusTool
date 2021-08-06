@@ -1,5 +1,5 @@
 from model.common import AbstractModel
-from model.backbone import UNet, UNet_V2
+from model.backbone import UNet, UNet_V2, DilatedInceptionResUNet, SAUNet, Classifier
 from torch.optim import Adam, SGD, lr_scheduler
 import torch.nn as nn
 from model.callback import MyLogger, WarmupLRScheduler
@@ -22,23 +22,33 @@ class MyModel(AbstractModel):
 
     def _init_model(self):
         if self.args.model == 'unet':
-            self.model = UNet(n_colors=self.args.n_colors, num_classes=self.args.n_classes,
+            self.model =  UNet(n_colors=self.args.n_colors, num_classes=self.args.n_classes,
+                              regression=self.args.regression).cuda()
+        elif self.args.model == 'DIR-unet':
+            self.model = DilatedInceptionResUNet(n_colors=self.args.n_colors, num_classes=self.args.n_classes,
+                              regression=self.args.regression).cuda()
+        elif self.args.model == 'SA-unet':
+            self.model = SAUNet(n_colors=self.args.n_colors, num_classes=self.args.n_classes,
                               regression=self.args.regression).cuda()
         self.optimizer = Adam(self.model.parameters(), lr=self.args.lr, betas=(0.5, 0.999), weight_decay=self.args.weight_decay)
         # self.optimizer = SGD(self.model.parameters(), lr=self.args.lr, momentum=0.9, nesterov=True, weight_decay=0.0005)
-        if self.args.regression:
-            self.loss = nn.L1Loss().cuda()
+        if False:
+            self.loss = None
         else:
-            if self.args.n_classes == 1:
-                self.loss = nn.BCELoss().cuda()
+            if self.args.regression:
+                self.loss = nn.L1Loss().cuda()
             else:
-                self.loss = nn.CrossEntropyLoss().cuda()
+                if self.args.n_classes == 1:
+                    self.loss = nn.BCELoss().cuda()
+                else:
+                    self.loss = nn.CrossEntropyLoss().cuda()
         if self.args.n_gpus > 1:
             self.model = nn.DataParallel(self.model)
 
 
 
     def train(self, train_dataloader, val_dataloader, verbose=True):
+        torch.manual_seed(self.args.seed)
         if verbose:
             losses_name = ['loss', 'accuracy']
         else:
@@ -52,8 +62,7 @@ class MyModel(AbstractModel):
         # warmup_scheduler = Nonewarmup_batch = len(train_loader) * warmup_epoch
         remain_batch = step * (self.args.epochs - self.args.warm_epochs)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=remain_batch)
-        logger = MyLogger(self.args, self.args.epochs, self.args.batch_size,
-                          losses_name, step=step, model=self.model,
+        logger = MyLogger(self.args, self.args.epochs, self.args.batch_size, step=step, model=self.model,
                           metric=self.args.metric, optimizer=self.optimizer,
                           warmup_scheduler=warmup_scheduler, lr_scheduler=lr_scheduler)
         self.logger = logger
@@ -64,11 +73,20 @@ class MyModel(AbstractModel):
                 losses = {}
                 logger.on_batch_begin()
                 self.optimizer.zero_grad()
-                x, y = batch
-                x = x.cuda()
-                y = y.long().cuda()
-                # Forward
-                pred = self.model(x)
+                if self.args.n_colors == 4:
+                    x, meta, y = batch
+                    meta = meta.cuda()
+                    x = x.cuda()
+                    y = y.long().cuda()
+                    # Forward
+                    concat = torch.cat((x, meta), dim=1)
+                    pred = self.model(concat)
+                else:
+                    x, y = batch
+                    x = x.cuda()
+                    y = y.long().cuda()
+                    # Forward
+                    pred = self.model(x)
                 y = torch.squeeze(y, dim=1)
                 loss = self.loss(pred, y)
                 loss.backward()
@@ -91,32 +109,36 @@ class MyModel(AbstractModel):
                 vis = True
             else:
                 vis = False
-            val_acc, val_disc_dice, val_cup_dice, = self.test(val_dataloader, val=True, vis=vis)
+            if self.args.n_classes == 3:
+                val_acc, val_disc_dice, val_cup_dice, = self.test(val_dataloader, val=True, vis=vis)
+            else:
+                val_acc, val_dice, = self.test(val_dataloader, val=True, vis=vis)
             if self.args.n_classes == 3:
                 metric = {'val_accuracy': val_acc, 'val_disc_dice': val_disc_dice,
                           'val_cup_dice': val_cup_dice}
             else:
-                metric = {'val_accuracy': val_acc, 'val_dice': val_cup_dice}
+                metric = {'val_accuracy': val_acc, 'val_dice': val_dice}
             logger.on_epoch_end(metric)
         logger.on_train_end()
 
-
     def test(self, test_dataloader, out_dir=None,
              val=False, vis=True, eval=False):
-        if not self.args.test:
-            self.load()
+        if not self.args.test and not val:
+            self.load(force=True)
         self.model.eval()
         torch.set_grad_enabled(False)
         total = 0
         correct = 0
-        tp = [0, 0]
-        tn = [0, 0]
-        fp = [0, 0]
-        fn = [0, 0]
         images = []
         preds = []
         gts = []
-        target_list = [0, 2]
+        
+        if self.args.n_classes == 3:
+            target_list = [0, 2]
+            dice_list = [[], []]
+        else:
+            target_list = [1]
+            dice_list = [[]]
         only_test = False # Without evaluation
         if isinstance(test_dataloader, str):
             only_test = True
@@ -129,9 +151,19 @@ class MyModel(AbstractModel):
             test_dataloader = DataLoader(dataset, batch_size=self.args.batch_size,
                                      shuffle=False, num_workers=self.args.n_threads)
         for test_data in tqdm(test_dataloader):
-            x, y = test_data
-            x= x.cuda()
-
+            if self.args.n_colors == 4:
+                x, meta, y = test_data
+                x = x.cuda()
+                meta = meta.cuda()
+                y = y.long().cuda()
+                concat = torch.cat((x, meta), dim=1)
+                y_pred = self.model(concat)
+            else:
+                x, y = test_data
+                x = x.cuda()
+                y = y.long().cuda()
+                # Forward
+                y_pred = self.model(x)
             if not only_test:
                 y = y.long().cuda()
             if vis:
@@ -149,7 +181,6 @@ class MyModel(AbstractModel):
                 else:
                     gts += [temp_y[i, ...].permute(1, 2, 0).cpu().numpy()
                                for i in range(x.size(0))]
-            y_pred = self.model(x)
             if vis or eval:
                 if self.args.n_classes > 0: # Regularize to [0, 1]
                     softmax_pred = nn.Softmax(dim=1)(y_pred.clone())
@@ -160,33 +191,32 @@ class MyModel(AbstractModel):
             if not only_test and not eval:
                 total += x.size(0)
                 correct += seg_accuracy(y_pred, y,regression=self.args.regression) * x.size(0)
-                for i in range(2):
+                for i in range(len(target_list)):
                     tp_, tn_, fp_, fn_, _dice = dice(y, y_pred, supervised=True, target=target_list[i])
-                    tp[i] += tp_
-                    tn[i] += tn_
-                    fp[i] += fp_
-                    fn[i] += fn_
-        if not only_test and out_dir is None and not eval:
-            epsilon = 1e-7
-            dice_list = []
-            for i in range(2):
-                precision = tp[i] / (tp[i] + fp[i] + epsilon)
-                recall = tp[i] / (tp[i] + fn[i] + epsilon)
-                dice_list.append(2 * (precision * recall) /
-                            (precision + recall + epsilon))
+                    dice_list[i].append(_dice.detach().cpu().numpy())        
             acc = round(correct / total, 4)
         print('')
         self.model.train()
         torch.set_grad_enabled(True)
-
+        for i in range(len(target_list)):
+            dice_list[i] = np.mean(dice_list[i])
         if not only_test:
             if vis:
                 self._vis(images, gts=gts, preds=preds, val=val, out_dir=out_dir)
             if eval:
                 return preds, gts, images
             else:
-                return acc , dice_list[0].detach().cpu().numpy(), \
-                   dice_list[1].detach().cpu().numpy()
+                if val:
+                    if self.args.n_classes == 3:
+                        return acc, dice_list[0], dice_list[1]
+                    else:
+                        return acc, dice_list[0]
+                else:
+                    if self.args.n_classes == 3:
+                        return [acc, dice_list[0], \
+                        dice_list[1]], preds, gts
+                    else:
+                        return [acc, dice_list[0].detach().cpu().numpy()], preds, gts
         else:
             self._vis(images, gts=gts, preds=preds, val=val, out_dir=out_dir, name_list=gts)
 
@@ -198,6 +228,7 @@ class MyModel(AbstractModel):
                 out_dir = os.path.join(self.args.model_path, 'val_samples')
             else:
                 out_dir = os.path.join(self.args.model_path, 'test_samples')
+
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
         quant = True
@@ -209,7 +240,6 @@ class MyModel(AbstractModel):
             gts_label = gts.flatten()
             preds_label = np.argmax(preds, axis=-1).flatten()
             preds_score = preds[..., 1].flatten()
-
             if not val and self.args.n_classes == 2:
                 auc = roc_auc_score(gts_label, preds_score)
                 dice = f1_score(gts_label, preds_label)

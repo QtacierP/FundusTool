@@ -2,13 +2,12 @@ import torch
 import torch.nn as nn
 from torchvision.models import inception_v3, resnet101, Inception3, resnet50
 import torch.nn.functional as F
-from efficientnet_pytorch import EfficientNet
 
 def InceptionV3_backbone(num_classes, regression=False):
     base_model = Inception3(num_classes=num_classes, aux_logits=False)
     num_ftrs = base_model.fc.in_features
     if regression:
-        base_model.fc = nn.Linear(num_ftrs, 1)
+        base_model.fc = nn.Sequential(nn.Linear(num_ftrs, 1), nn.ReLU())
     else:
         base_model.fc = nn.Linear(num_ftrs, num_classes)
     return base_model.cuda()
@@ -18,11 +17,52 @@ def resnet101_backbone(num_classes, n_colors=3, regression=False):
     base_model.conv1 = nn.Conv2d(n_colors, 64, kernel_size=7, stride=2, padding=3,bias=False)
     num_ftrs = base_model.fc.in_features
     if regression:
-        base_model.fc = nn.Sequential(nn.Dropout(0.2), nn.Linear(num_ftrs, 1))
+        base_model.fc = nn.Sequential(nn.Linear(num_ftrs, 1), nn.ReLU())
     else:
-        base_model.fc = nn.Sequential(nn.Dropout(0.2), nn.Linear(num_ftrs, num_classes))
+        base_model.fc = nn.Sequential(nn.Linear(num_ftrs, num_classes))
 
     return base_model.cuda()
+
+
+class UncertaintyDRResNet50(nn.Module):
+    def __init__(self, num_classes=5, n_colors=3, regression=False, size=1024,
+                 drop_prob=0.5, sample=False, MC_samples=100, trainable=False):
+        super(UncertaintyDRResNet50, self).__init__()
+        base_model = resnet50(pretrained=True)
+        base_model.conv1 = nn.Conv2d(n_colors, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        num_ftrs = base_model.fc.in_features
+        if regression:
+            base_model.fc = nn.Sequential(nn.Dropout(drop_prob), nn.Linear(num_ftrs, 1), nn.ReLU())
+        else:
+            base_model.fc = nn.Sequential(nn.Dropout(drop_prob), nn.Linear(num_ftrs, num_classes))
+        # TODO: Need to check the model list
+        head = list(base_model.children())[:-1]  # From head to the last bottleneck
+        tail = list(base_model.children())[-1:]
+        self.head = nn.Sequential(*head)
+        self.tail = nn.Sequential(*tail)
+        self.var_branch = nn.Sequential(nn.Linear(2048, 1)) # No ReLu
+        self.sample = sample
+        self.MC_samples = MC_samples
+
+
+    def forward(self, x):
+        if isinstance(x, list):
+            x, trainable = x
+        else:
+            trainable = False
+        features = self.head(x)
+        features = features.view(features.size(0), 1, -1)
+        if self.sample:
+            x_list = torch.Tensor([self.tail(features) for i in range(self.MC_samples)])
+            mean = torch.mean(x_list)
+            std = torch.std(x_list)
+            log_var = self.var_branch(features)
+            return mean, std, log_var
+        else: # For test
+            if trainable:
+                log_var = self.var_branch(features)
+                return self.tail(features), log_var
+            return self.tail(features)
 
 def resnet50_backbone(num_classes, n_colors=3, regression=False, size=512):
     base_model = resnet50(pretrained=True)
@@ -42,6 +82,8 @@ def resnet50_backbone(num_classes, n_colors=3, regression=False, size=512):
             base_model.fc = nn.Sequential(module, nn.Linear(num_ftrs, num_classes))
 
     return base_model.cuda()
+
+
 
 class ResBlock(nn.Module):
     def __init__(self, in_features):
@@ -125,7 +167,7 @@ def EfficientNet_backbone(num_classes, regression=False, name='efficientnet-b1')
 
 class UNet(nn.Module):
     # Simple UNet
-    def __init__(self, n_colors, num_classes, regression=False, num_downs=5, norm_layer=nn.BatchNorm2d):
+    def __init__(self, n_colors, num_classes, regression=False, num_downs=4, norm_layer=nn.BatchNorm2d):
         super(UNet, self).__init__()
         if regression:
             num_classes = 1
@@ -144,12 +186,12 @@ class UNet(nn.Module):
                          nn.ReLU(True),
                          nn.Conv2d(out_filters, out_filters, kernel_size=3, stride=2, padding=1),
                          norm_layer(out_filters),
-                         nn.ReLU(inplace=True)])
+                         nn.LeakyReLU(inplace=True)])
             filters = out_filters
             out_filters *= 2
 
         mid = []
-        for _ in range(9):
+        for _ in range(2):
             mid += [ResBlock(filters)]
 
         ups = []
@@ -178,7 +220,7 @@ class UNet(nn.Module):
         self.tail = nn.Sequential(*tail)
         self.mid = nn.Sequential(*mid)
 
-    def forward(self, x):
+    def forward(self, x, need_feature=False):
         downs = []
         for i in range(self.num_downs):
             x = self.downs[i](x)
@@ -187,8 +229,10 @@ class UNet(nn.Module):
         for i in range(self.num_downs):
             x = torch.cat((x, downs[- i - 1]), dim=1)
             x = self.ups[i](x)
-        x = self.tail(x)
-        return x
+        out = self.tail(x)
+        if need_feature:
+            return out, x
+        return out
 
 class UNet_V2(nn.Module):
     def __init__(self, n_colors, num_classes, regression=False, bilinear=False):
@@ -348,48 +392,228 @@ class ResnetBlock(nn.Module):
         return out
 
 
-class NLayerDiscriminator(nn.Module):
-    """Defines a PatchGAN discriminator"""
+'''
+================================================
+=============  Improved Network ================
+================================================
+'''
 
-    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d):
-        """Construct a PatchGAN discriminator
-        Parameters:
-            input_nc (int)  -- the number of channels in input images
-            ndf (int)       -- the number of filters in the last conv layer
-            n_layers (int)  -- the number of conv layers in the discriminator
-            norm_layer      -- normalization layer
-        """
-        super(NLayerDiscriminator, self).__init__()
-        if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
-            use_bias = norm_layer.func == nn.InstanceNorm2d
+class dilated_inception_block(nn.Module):
+    def __init__(self, input_dims, filters):
+        super(dilated_inception_block, self).__init__()
+        # Stage 1
+        branch1 = [nn.Conv2d(input_dims, filters, kernel_size=1),
+                   nn.BatchNorm2d(filters),nn.ReLU(True)]
+        branch2 = [nn.Conv2d(input_dims, filters, kernel_size=1),
+                   nn.BatchNorm2d(filters),nn.ReLU(True)]
+        branch3 = [nn.Conv2d(input_dims, filters, kernel_size=1),
+                   nn.BatchNorm2d(filters),nn.ReLU(True)]
+        branch4 = [nn.Conv2d(input_dims, filters, kernel_size=1),
+                   nn.BatchNorm2d(filters),nn.ReLU(True)]
+
+        # Stage 2
+        branch2 += [nn.Conv2d(filters, filters, kernel_size=3, dilation=2,
+                              padding=2),
+                    nn.BatchNorm2d(filters),
+                    nn.ReLU(True)]
+        branch3 += [nn.Conv2d(filters, filters, kernel_size=3, dilation=4,
+                              padding=4),
+                    nn.BatchNorm2d(filters),
+                    nn.ReLU(True)]
+        branch4 += [nn.Conv2d(filters, filters, kernel_size=3, dilation=8,
+                              padding=8),
+                    nn.BatchNorm2d(filters),
+                    nn.ReLU(True)]
+
+        fusion = [nn.Conv2d(4 * filters, filters, kernel_size=1),
+                  nn.BatchNorm2d(filters),
+                  nn.ReLU(True)]
+        botttleneck = [nn.Conv2d(input_dims, filters, kernel_size=1),
+                  nn.BatchNorm2d(filters),
+                  nn.ReLU(True)]
+
+        self.branch1 = nn.Sequential(*branch1)
+        self.branch2 = nn.Sequential(*branch2)
+        self.branch3 = nn.Sequential(*branch3)
+        self.branch4 = nn.Sequential(*branch4)
+        self.fusion = nn.Sequential(*fusion)
+        self.bottleneck = nn.Sequential(*botttleneck)
+
+    def forward(self, x, scale=1.0):
+        b1 = self.branch1(x)
+        b2 = self.branch2(x)
+        b3 = self.branch3(x)
+        b4 = self.branch4(x)
+        fusion = torch.cat([b1, b2, b3, b4], dim=1)
+        fusion = self.fusion(fusion)
+        x = self.bottleneck(x)
+        return fusion + scale * x
+
+class DilatedInceptionResUNet(nn.Module):
+    # Simple UNet
+    def __init__(self, n_colors, num_classes, regression=False, num_downs=5, norm_layer=nn.BatchNorm2d):
+        super(DilatedInceptionResUNet, self).__init__()
+        if regression:
+            num_classes = 1
+        self.num_downs = num_downs
+        filters = n_colors
+        downs = []
+        out_filters = 64
+        for down in range(num_downs):
+            downs.append([
+                         dilated_inception_block(filters, out_filters),
+                         nn.Conv2d(out_filters, out_filters, kernel_size=3, stride=2, padding=1),
+                         norm_layer(out_filters),
+                         nn.ReLU(inplace=True)])
+            filters = out_filters
+            out_filters *= 2
+        mid = []
+        for _ in range(3):
+            mid += [ResBlock(filters)]
+        ups = []
+        out_filters = filters // 2
+        for up in range(num_downs):
+            ups.append([dilated_inception_block(filters*2, out_filters),
+                        nn.ConvTranspose2d(out_filters, out_filters,
+                                          kernel_size=4, stride=2, padding=1),
+                        norm_layer(out_filters),
+                        nn.ReLU(inplace=True)])
+            filters = out_filters
+            out_filters //= 2
+        if num_classes == 1:
+            tail = [nn.Conv2d(filters, 1, kernel_size=3, padding=1),
+                    nn.Sigmoid()]
         else:
-            use_bias = norm_layer == nn.InstanceNorm2d
+            tail = [nn.Conv2d(filters, num_classes, kernel_size=3, padding=1)]
 
-        kw = 4
-        padw = 1
-        sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
-        nf_mult = 1
-        nf_mult_prev = 1
-        for n in range(1, n_layers):  # gradually increase the number of filters
-            nf_mult_prev = nf_mult
-            nf_mult = min(2 ** n, 8)
-            sequence += [
-                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
-                norm_layer(ndf * nf_mult),
-                nn.LeakyReLU(0.2, True)
-            ]
+        self.downs = nn.ModuleList([nn.Sequential(*downsample) for downsample in downs])
+        self.ups = nn.ModuleList([nn.Sequential(*upsample) for upsample in ups])
+        self.tail = nn.Sequential(*tail)
+        self.mid = nn.Sequential(*mid)
 
-        nf_mult_prev = nf_mult
-        nf_mult = min(2 ** n_layers, 8)
-        sequence += [
-            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
-            norm_layer(ndf * nf_mult),
-            nn.LeakyReLU(0.2, True)
-        ]
+    def forward(self, x, need_feature=False):
+        downs = []
+        for i in range(self.num_downs):
+            x = self.downs[i](x)
+            downs.append(x)
+        x = self.mid(x)
+        for i in range(self.num_downs):
+            x = torch.cat((x, downs[- i - 1]), dim=1)
+            x = self.ups[i](x)
+        out = self.tail(x)
+        if need_feature:
+            return out, x
+        else:
+            return out
 
-        sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
-        self.model = nn.Sequential(*sequence)
 
-    def forward(self, input):
-        """Standard forward."""
-        return self.model(input)
+class Self_Attn(nn.Module):
+    """ Self attention Layer"""
+
+    def __init__(self, in_dim, activation=nn.ReLU):
+        super(Self_Attn, self).__init__()
+        self.chanel_in = in_dim
+        self.activation = activation
+
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.softmax = nn.Softmax(dim=-1)  #
+
+    def forward(self, x):
+        """
+            inputs :
+                x : input feature maps( B X C X W X H)
+            returns :
+                out : self attention value + input feature
+                attention: B X N X N (N is Width*Height)
+        """
+        m_batchsize, C, width, height = x.size()
+        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
+        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
+        energy = torch.bmm(proj_query, proj_key)  # transpose check
+        attention = self.softmax(energy)  # BX (N) X (N)
+        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)  # B X C X N
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = out.view(m_batchsize, C, width, height)
+        out = self.gamma * out + x
+        return out
+
+
+class SAUNet(nn.Module):
+    # Simple UNet
+    def __init__(self, n_colors, num_classes, regression=False, num_downs=4, norm_layer=nn.BatchNorm2d):
+        super(SAUNet, self).__init__()
+        if regression:
+            num_classes = 1
+        use_bias = norm_layer == nn.InstanceNorm2d
+        self.num_downs = num_downs
+        filters = n_colors
+        downs = []
+        out_filters = 64
+        for down in range(num_downs):
+            downs.append([
+                         nn.Conv2d(filters, out_filters, kernel_size=3, bias=use_bias, padding=1),
+                         norm_layer(out_filters),
+                         nn.ReLU(True),
+                         nn.Conv2d(out_filters, out_filters, kernel_size=3, bias=use_bias, padding=1),
+                         norm_layer(out_filters),
+                         nn.ReLU(True),
+                         nn.Conv2d(out_filters, out_filters, kernel_size=3, stride=2, padding=1),
+                         norm_layer(out_filters),
+                         nn.ReLU(inplace=True)])
+            filters = out_filters
+            out_filters *= 2
+
+        mid = []
+        for _ in range(2):
+            mid += [Self_Attn(filters)]
+
+        ups = []
+        out_filters = filters // 2
+        for up in range(num_downs):
+            ups.append([nn.Conv2d(filters * 2, out_filters, kernel_size=3, bias=use_bias, padding=1),
+                        norm_layer(out_filters),
+                        nn.ReLU(True),
+                        nn.Conv2d(out_filters, out_filters, kernel_size=3, bias=use_bias, padding=1),
+                        norm_layer(out_filters),
+                        nn.ReLU(True),
+                        nn.ConvTranspose2d(out_filters, out_filters,
+                                          kernel_size=4, stride=2, padding=1),
+                        norm_layer(out_filters),
+                        nn.ReLU(inplace=True)])
+            filters = out_filters
+            out_filters //= 2
+
+        if num_classes == 1:
+            tail = [nn.Conv2d(filters, 1, kernel_size=3, padding=1),
+                    nn.Sigmoid()]
+        else:
+            tail = [nn.Conv2d(filters, num_classes, kernel_size=3, padding=1)]
+
+        self.downs = nn.ModuleList([nn.Sequential(*downsample) for downsample in downs])
+        self.ups = nn.ModuleList([nn.Sequential(*upsample) for upsample in ups])
+        self.tail = nn.Sequential(*tail)
+        self.mid = nn.Sequential(*mid)
+
+    def forward(self, x, need_feature=False):
+        downs = []
+        for i in range(self.num_downs):
+            x = self.downs[i](x)
+            downs.append(x)
+        x = self.mid(x)
+        for i in range(self.num_downs):
+            x = torch.cat((x, downs[- i - 1]), dim=1)
+            x = self.ups[i](x)
+        out = self.tail(x)
+        if need_feature:
+            return out, x
+        else:
+            return out
+
+'''
+=================================
+=========== Deep Snake ==========
+=================================
+'''

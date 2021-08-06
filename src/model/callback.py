@@ -14,7 +14,7 @@ from utils import UnNormalize
 class MyLogger():
     # A Keras style Logger
     def __init__(self, args, max_epoch, batch_size,
-                 losses_name, step, model, metric='val_kappa', current_epoch=1, optimizer=None, warmup_scheduler=None,
+                 step, model, metric='val_kappa', current_epoch=1, optimizer=None, warmup_scheduler=None,
                  lr_scheduler=None, weighted_sampler=None):
         self.callbacks = []
         self.max_epoch = max_epoch
@@ -41,8 +41,7 @@ class MyLogger():
             self.opt = np.greater
             self.best = -np.inf
 
-        for loss_name in losses_name:
-            self.losses[loss_name] = []
+
 
     def on_train_begin(self):
         tensor = torch.randn(1, self.args.n_colors, self.args.size, self.args.size).cuda()
@@ -89,6 +88,8 @@ class MyLogger():
         values = []
         for loss_name in losses.keys():
             loss = losses[loss_name]
+            if loss_name not in self.losses.keys():
+                self.losses[loss_name] = []
             if not isinstance(loss, list):
                 self.losses[loss_name].append(loss)
                 values.append((loss_name, loss))

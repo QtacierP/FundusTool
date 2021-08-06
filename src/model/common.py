@@ -29,7 +29,7 @@ class AbstractModel():
     def test(self, test_dataloader):
         pass
 
-    def load(self):
+    def load(self, force=False):
         if self.args.n_gpus > 1:
             module = self.model.module
         else:
@@ -37,7 +37,9 @@ class AbstractModel():
         if self.args.resume:
             module.load_state_dict(torch.load(os.path.join(self.args.model_path,
                                              '{}_last.pt'.format(self.args.model))))
-        elif self.args.test:
+        elif self.args.test or force:
+            print('load model from ', os.path.join(self.args.model_path,
+                                             '{}_best.pt'.format(self.args.model)))
             module.load_state_dict(torch.load(os.path.join(self.args.model_path,
                                              '{}_best.pt'.format(self.args.model))))
 class FocalLoss(torch.nn.Module):
@@ -75,4 +77,22 @@ class FocalLoss(torch.nn.Module):
         else:
             return loss.sum()
 
+class DALoss(torch.nn.Module):
+    def __init__(self, model):
+        super(DALoss, self).__init__()
+        self.model = model
+
+    def forward(self):
+        pass
+
+class UncertaintyLoss(torch.nn.Module):
+    def __init__(self):
+        super(UncertaintyLoss, self).__init__()
+
+
+    def forward(self, input, y):
+        mean, log_var = input
+        input_var = torch.exp(-log_var)
+        loss = torch.mean(0.5 * torch.mul((input_var), (mean - y) ** 2) + 0.5 * log_var)
+        return loss
 

@@ -3,13 +3,20 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix
 import os
 import matplotlib.pyplot as plt
 import cv2
 from copy import deepcopy
 from tqdm import tqdm
 import heapq
+from  scipy.stats import ttest_rel
+from torchvision import datasets, transforms
+import csv
+import imageio
+import multiprocessing
+EPS = 1e-7
+
 
 def normalize(imgs):
     return imgs / 127.5 - 1
@@ -336,13 +343,474 @@ def get_statics(args, preds, gts, imgs, samples=5):
     print(min_dice)
     f = open(os.path.join(out_dir, 'result.txt'), 'w')
     for i in range(2):
-        sigma = min(mean_dices[i] - min_dice[i],
-                    max_dice[i] - mean_dices[i])
-        f.write('{}: {} +- {} \n'.format(dice_names[i], mean_dices[i], sigma))
+        sigma = np.std(dices[i])
+        f.write('{}: {}  +- {} \n'.format(dice_names[i], mean_dices[i], sigma))
     f.close()
     return ori_dices
 
+def get_compare(args, imgs, e_imgs, preds, e_preds,
+                gts, dices, e_dices, samples=5, grade=''):
+    diffs = []
+    for i in range(2):
+        diffs.append(np.asarray(e_dices[i]) - np.asarray(dices[i]))
+    dice_names = ['disc_dice', 'cup_dice']
+    max_diffs = [{}, {}]
+    min_diffs = [{}, {}]
+
+    for i in range(2):
+        diff = diffs[i]
+        max_samples = heapq.nlargest(samples, range(len(diff)), diff.take)
+        for max_id in max_samples:
+            max_diffs[i][max_id] = diff[max_id]
+        min_samples = heapq.nsmallest(samples, range(len(diff)), diff.take)
+        for min_id in min_samples:
+            min_diffs[i][min_id] = diff[min_id]
+
+    # Save Part
+    min_max_name = ['max', 'min']
+    min_max_list = [max_diffs, min_diffs]
+    for sample in range(samples):
+        for i in range(2):
+            for m in range(2):
+                if grade == '':
+                    task_dir = os.path.join('../data/experiment/diff/{}/{}'.format(dice_names[i], min_max_name[m]))
+                else:
+                    task_dir = os.path.join('../data/experiment/diff_{}/{}/{}'.
+                    format(grade, dice_names[i], min_max_name[m]))
+                if not os.path.exists(task_dir):
+                    os.makedirs(task_dir)
+                for index in min_max_list[m][i].keys():
+                    diff_ = min_max_list[m][i][index]
+                    img = (imgs[index] * 255).astype(np.uint8)
+                    e_img = (e_imgs[index]* 255).astype(np.uint8)
+                    pred = (preds[index] / (args.n_classes - 1) * 255).astype(np.uint8)
+                    e_pred = (e_preds[index] / (args.n_classes - 1) * 255).astype(np.uint8)
+                    gt = (gts[index]/ (args.n_classes - 1) * 255).astype(np.uint8)
+                    gt = cv2.cvtColor(gt , cv2.COLOR_GRAY2RGB)
+                    result = np.hstack((img, e_img, gt, pred, e_pred))
+                    file_name = os.path.join(task_dir, '{}.jpg'.format(diff_))
+                    plt.imsave(file_name, result)
 
 
+    for i in range(2):
+        if grade == '':
+            out_dir = os.path.join('../data/experiment/diff/{}/'.format(dice_names[i]))
+        else:
+            out_dir = os.path.join('../data/experiment/diff_{}/{}/'
+                .format(grade,dice_names[i]))
+        f = open(os.path.join(out_dir, 'result.txt'), 'w')
+        sigma = np.std(diffs[i])
+        mean  = np.mean(diffs[i])
+        f.write('{}: {}  +- {} \n'.format(dice_names[i], mean, sigma))
+        f.close()
+    return diffs
+
+def get_p_value(dices, e_dices):
+    z_list = []
+    for i in range(2):
+        dice_list = dices[i]
+        e_dice_list = e_dices[i]
+        t_val, p = ttest_rel(dice_list, e_dice_list)
+        z_list.append(p)
+    return z_list
+
+def divide_score(args, imgs, e_imgs, dices, e_dices, preds, e_preds, gts):
+    from model.backbone import resnet50_backbone
+    model = resnet50_backbone(num_classes=3).cuda()
+    model.load_state_dict(torch.load('../model/iqa/EyeQ_512_512/resnet50/resnet50_best.pt'))
+    torch.set_grad_enabled(False)
+    model.eval()
+    N = len(imgs)
+    good_imgs = []
+    good_dices = [[], []]
+    good_preds = []
+    good_gts = []
+    good_e_dices = [[], []]
+    good_e_preds = []
+    good_e_imgs = []
+    bad_imgs = []
+    bad_dices = [[], []]
+    bad_preds = []
+    bad_gts = []
+    bad_e_dices = [[], []]
+    bad_e_preds = []
+    bad_e_imgs = []
+    mid_imgs = []
+    mid_dices = [[], []]
+    mid_preds = []
+    mid_gts = []
+    mid_e_dices = [[], []]
+    mid_e_preds = []
+    mid_e_imgs = []
+
+    for i in tqdm(range(N)):
+        ori_img = imgs[i]
+        img = cv2.resize(ori_img, (args.size, args.size))
+        img = torch.from_numpy(img).cuda().permute(2, 0, 1)
+        img = transforms.Normalize(args.mean,
+                                 args.std)(img)
+        img = torch.unsqueeze(img, dim=0)
+        score = model(img)
+        grade = torch.argmax(score[0], dim=0).detach().cpu().numpy()
+        print(grade)
+        if grade == 0:
+            good_dices[0].append(dices[0][i])
+            good_dices[1].append(dices[1][i])
+            good_imgs.append(imgs[i])
+            good_preds.append(preds[i])
+            good_e_dices[0].append(e_dices[0][i])
+            good_e_dices[1].append(e_dices[1][i])
+            good_e_preds.append(e_preds[i])
+            good_e_imgs.append(e_imgs[i])
+            good_gts.append(gts[i])
+        elif grade == 1:
+            mid_dices[0].append(dices[0][i])
+            mid_dices[1].append(dices[1][i])
+            mid_imgs.append(imgs[i])
+            mid_preds.append(preds[i])
+            mid_e_dices[0].append(e_dices[0][i])
+            mid_e_dices[1].append(e_dices[1][i])
+            mid_e_preds.append(e_preds[i])
+            mid_e_imgs.append(e_imgs[i])
+            mid_gts.append(gts[i])
+        else:
+            bad_dices[0].append(dices[0][i])
+            bad_dices[1].append(dices[1][i])
+            bad_imgs.append(imgs[i])
+            bad_preds.append(preds[i])
+            bad_e_dices[0].append(e_dices[0][i])
+            bad_e_dices[1].append(e_dices[1][i])
+            bad_e_preds.append(e_preds[i])
+            bad_e_imgs.append(e_imgs[i])
+            bad_gts.append(gts[i])
+    torch.set_grad_enabled(True)
+    return [good_imgs, mid_imgs, bad_imgs], \
+           [good_e_imgs, mid_e_imgs, bad_e_imgs], \
+           [good_dices, mid_dices, bad_dices], \
+           [good_e_dices, mid_e_dices, bad_e_dices], \
+           [good_preds, mid_preds, bad_preds],\
+            [good_e_preds, mid_e_preds, bad_e_preds], \
+            [good_gts, mid_gts, bad_gts]
 
 
+def dice_coefficient(binary_segmentation, binary_gt_label):
+    '''
+    Compute the Dice coefficient between two binary segmentation.
+    Dice coefficient is defined as here: https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
+    Input:
+        binary_segmentation: binary 2D numpy array representing the region of interest as segmented by the algorithm
+        binary_gt_label: binary 2D numpy array representing the region of interest as provided in the database
+    Output:
+        dice_value: Dice coefficient between the segmentation and the ground truth
+    '''
+
+    # turn all variables to booleans, just in case
+    binary_segmentation = np.asarray(binary_segmentation, dtype=np.bool)
+    binary_gt_label = np.asarray(binary_gt_label, dtype=np.bool)
+
+    # compute the intersection
+    intersection = np.logical_and(binary_segmentation, binary_gt_label)
+
+    # count the number of True pixels in the binary segmentation
+    segmentation_pixels = float(np.sum(binary_segmentation.flatten()))
+    # same for the ground truth
+    gt_label_pixels = float(np.sum(binary_gt_label.flatten()))
+    # same for the intersection
+    intersection = float(np.sum(intersection.flatten()))
+
+    # compute the Dice coefficient
+    dice_value = 2 * intersection / (segmentation_pixels + gt_label_pixels)
+
+    # return it
+    return dice_value
+
+
+def vertical_diameter(binary_segmentation):
+    '''
+    Get the vertical diameter from a binary segmentation.
+    The vertical diameter is defined as the "fattest" area of the binary_segmentation parameter.
+    Input:
+        binary_segmentation: a boolean 2D numpy array representing a region of interest.
+    Output:
+        diameter: the vertical diameter of the structure, defined as the largest diameter between the upper and the lower interfaces
+    '''
+
+    # turn the variable to boolean, just in case
+    binary_segmentation = np.asarray(binary_segmentation, dtype=np.bool)
+
+    # get the sum of the pixels in the vertical axis
+    vertical_axis_diameter = np.sum(binary_segmentation, axis=0)
+
+    # pick the maximum value
+    diameter = np.max(vertical_axis_diameter)
+
+    # return it
+    return float(diameter)
+
+
+def vertical_cup_to_disc_ratio(segmentation):
+    '''
+    Compute the vertical cup-to-disc ratio from a given labelling map.
+    The vertical cup to disc ratio is defined as here: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1722393/pdf/v082p01118.pdf
+    Input:
+        segmentation: binary 2D numpy array representing a segmentation, with 0: optic cup, 128: optic disc, 255: elsewhere.
+    Output:
+        cdr: vertical cup to disc ratio
+    '''
+
+    # compute the cup diameter
+    cup_diameter = vertical_diameter(segmentation == 0)
+    # compute the disc diameter
+    disc_diameter = vertical_diameter(segmentation < 255)
+
+    return cup_diameter / (disc_diameter + EPS)
+
+
+def absolute_error(predicted, reference):
+    '''
+    Compute the absolute error between a predicted and a reference outcomes.
+    Input:
+        predicted: a float value representing a predicted outcome
+        reference: a float value representing the reference outcome
+    Output:
+        abs_err: the absolute difference between predicted and reference
+    '''
+
+    return abs(predicted - reference)
+
+def evaluate_binary_segmentation(segmentation, gt_label):
+    '''
+    Compute the evaluation metrics of the REFUGE challenge by comparing the segmentation with the ground truth
+    Input:
+        segmentation: binary 2D numpy array representing the segmentation, with 0: optic cup, 128: optic disc, 255: elsewhere.
+        gt_label: binary 2D numpy array representing the ground truth annotation, with the same format
+    Output:
+        cup_dice: Dice coefficient for the optic cup
+        disc_dice: Dice coefficient for the optic disc
+        cdr: absolute error between the vertical cup to disc ratio as estimated from the segmentation vs. the gt_label, in pixels
+    '''
+
+    # compute the Dice coefficient for the optic cup
+    cup_dice = dice_coefficient(segmentation==0, gt_label==0)
+    cup_conf = confusion_matrix(y_pred= (gt_label==0).flatten(), y_true=(segmentation==0).flatten())
+    if float(cup_conf[0, 0] + cup_conf[0, 1]) == 0:
+        cup_spe = 0
+    else:
+        cup_spe = float(cup_conf[0, 0]) / float(cup_conf[0, 0] + cup_conf[0, 1])
+    if float(cup_conf[1, 1] +cup_conf [1, 0]) == 0:
+        cup_sen = 0
+    else:
+        cup_sen = float(cup_conf[1, 1]) / float(cup_conf[1, 1] +cup_conf [1, 0])
+    cup_acc = (cup_sen + cup_spe) / 2
+    # compute the Dice coefficient for the optic disc
+    disc_dice = dice_coefficient(segmentation<255, gt_label<255)
+    disc_conf = confusion_matrix(y_true=(gt_label<255).flatten(), y_pred=(segmentation<255).flatten())
+    if float(disc_conf[0, 0] + disc_conf[0, 1]) == 0:
+        disc_spe = 0
+    else:
+        disc_spe = float(disc_conf[0, 0]) / float(disc_conf[0, 0] + disc_conf[0, 1])
+    if float(disc_conf[1, 1] + disc_conf[1, 0]) == 0:
+        disc_sen = 0
+    else:
+        disc_sen = float(disc_conf[1, 1]) / float(disc_conf[1, 1] + disc_conf[1, 0])
+    disc_acc = (disc_sen + disc_spe) / 2
+    # compute the absolute error between the cup to disc ratio estimated from the segmentation vs. the gt label
+    cdr = absolute_error(vertical_cup_to_disc_ratio(segmentation), vertical_cup_to_disc_ratio(gt_label))
+
+    return cup_dice, disc_dice, cdr, cup_acc, disc_acc
+
+def generate_table_of_results(image_filenames, segmentation_folder, gt_folder, is_training=False):
+    '''
+    Generates a table with image_filename, cup_dice, disc_dice and cdr values
+    Input:
+        image_filenames: a list of strings with the names of the images.
+        segmentation_folder: a string representing the full path to the folder where the segmentation files are
+        gt_folder: a string representing the full path to the folder where the ground truth annotation files are
+        is_training: a boolean value indicating if the evaluation is performed on training data or not
+    Output:
+        image_filenames: same as the input parameter
+        cup_dices: a numpy array with the same length than the image_filenames list, with the Dice coefficient for each optic cup
+        disc_dices: a numpy array with the same length than the image_filenames list, with the Dice coefficient for each optic disc
+        ae_cdrs: a numpy array with the same length than the image_filenames list, with the absolute error of the vertical cup to disc ratio
+    '''
+
+    # initialize an array for the Dice coefficients of the optic cups
+    cup_dices = np.zeros(len(image_filenames), dtype=np.float)
+    # initialize an array for the Dice coefficients of the optic discs
+    disc_dices = np.zeros(len(image_filenames), dtype=np.float)
+    # initialize an array for the absolute errors of the vertical cup to disc ratios
+    ae_cdrs = np.zeros(len(image_filenames), dtype=np.float)
+    cup_acc = np.zeros(len(image_filenames), dtype=np.float)
+    disc_acc = np.zeros(len(image_filenames), dtype=np.float)
+
+    p = multiprocessing.Pool(256)
+
+    # iterate for each image filename
+
+    # Improved with multi-processes
+    for i in range(len(image_filenames)):
+        result = p.apply_async(evaluate_one,  args=(segmentation_folder, is_training, image_filenames, gt_folder, i))
+        cup_dices[i], disc_dices[i], ae_cdrs[i], cup_acc[i], disc_acc[i] = result.get()
+    p.close()
+    p.join()
+     # read the segmentation
+    # return the colums of the table
+    return image_filenames, cup_dices, disc_dices, ae_cdrs, cup_acc, disc_acc
+
+def evaluate_one(segmentation_folder, is_training, image_filenames, gt_folder, i):
+    segmentation = imageio.imread(os.path.join(segmentation_folder, image_filenames[i]))
+    if len(segmentation.shape) > 2:
+        segmentation = segmentation[:, :, 0]
+    # read the gt
+    if is_training:
+        gt_filename = os.path.join(gt_folder, 'Glaucoma', image_filenames[i])
+        if os.path.exists(gt_filename):
+            gt_label = imageio.imread(gt_filename)
+        else:
+            gt_filename = os.path.join(gt_folder, 'Non-Glaucoma', image_filenames[i])
+            if os.path.exists(gt_filename):
+                gt_label = imageio.imread(gt_filename)
+            else:
+                raise ValueError(
+                    'Unable to find {} in your training folder. Make sure that you have the folder organized as provided in our website.'.format(
+                        image_filenames[i]))
+    else:
+        gt_filename = os.path.join(gt_folder, image_filenames[i])
+        if os.path.exists(gt_filename):
+            gt_label = imageio.imread(gt_filename)
+        else:
+            raise ValueError(
+                'Unable to find {} in your ground truth folder. If you are using training data, make sure to use the parameter is_training in True.'.format(
+                    image_filenames[i]))
+
+    # evaluate the results and assign to the corresponding row in the table
+    return evaluate_binary_segmentation(segmentation,
+                                                                                                    gt_label)
+
+def get_mean_values_from_table(cup_dices, disc_dices, ae_cdrs, cup_accs, disc_accs):
+    '''
+    Compute the mean evaluation metrics for the segmentation task.
+    Input:
+        cup_dices: a numpy array with the same length than the image_filenames list, with the Dice coefficient for each optic cup
+        disc_dices: a numpy array with the same length than the image_filenames list, with the Dice coefficient for each optic disc
+        ae_cdrs: a numpy array with the same length than the image_filenames list, with the absolute error of the vertical cup to disc ratio
+    Output:
+        mean_cup_dice: the mean Dice coefficient for the optic cups
+        mean_disc_dice: the mean Dice coefficient for the optic disc
+        mae_cdr: the mean absolute error for the vertical cup to disc ratio
+    '''
+
+    # compute the mean values of each column
+    mean_cup_dice = np.mean(cup_dices)
+    mean_disc_dice = np.mean(disc_dices)
+    mae_cdr = np.mean(ae_cdrs)
+    cup_acc = np.mean(cup_accs)
+    disc_acc = np.mean(disc_accs)
+    return mean_cup_dice, mean_disc_dice, mae_cdr, cup_acc, disc_acc
+
+def get_filenames(path_to_files, extension):
+    '''
+    Get all the files on a given folder with the given extension
+    Input:
+        path_to_files: string to a path where the files are
+        [extension]: string representing the extension of the files
+    Output:
+        image_filenames: a list of strings with the filenames in the folder
+    '''
+
+    # initialize a list of image filenames
+    image_filenames = []
+    # add to this list only those filenames with the corresponding extension
+    for file in os.listdir(path_to_files):
+        if file.endswith('.' + extension):
+            image_filenames = image_filenames + [ file ]
+
+    return image_filenames
+
+def evaluate_segmentation_results(segmentation_folder, gt_folder, output_path=None, export_table=False, is_training=False):
+    '''
+    Evaluate the segmentation results of a single submission
+    Input:
+        segmentation_folder: full path to the segmentation files
+        gt_folder: full path to the ground truth files
+        [output_path]: a folder where the results will be saved. If not provided, the results are not saved
+        [export_table]: a boolean value indicating if the table will be exported or not
+        [is_training]: a boolean value indicating if the evaluation is performed on training data or not
+    Output:
+        mean_cup_dice: the mean Dice coefficient for the optic cups
+        mean_disc_dice: the mean Dice coefficient for the optic disc
+        mae_cdr: the mean absolute error for the vertical cup to disc ratio
+    '''
+
+    # get all the image filenames
+    image_filenames = get_filenames(segmentation_folder, 'bmp')
+    if len(image_filenames)==0:
+        print('** The segmentation folder does not include any bmp file. Check the files extension and resubmit your results.')
+        raise ValueError()
+    # create output path if it does not exist
+    if not (output_path is None) and not (os.path.exists(output_path)):
+        os.makedirs(output_path)
+
+    # generate a table of results
+    _, cup_dices, disc_dices, ae_cdrs, cup_accs, disc_accs = generate_table_of_results(image_filenames, segmentation_folder, gt_folder, is_training)
+    # if we need to save the table
+    if not(output_path is None) and (export_table):
+        # initialize the table filename
+        table_filename = os.path.join(output_path, 'evaluation_table_segmentation.csv')
+        # save the table
+        save_csv_segmentation_table(table_filename, image_filenames, cup_dices, disc_dices, ae_cdrs)
+
+    # compute the mean values
+    mean_cup_dice, mean_disc_dice, mae_cdr, mean_cup_acc, mean_disc_acc = get_mean_values_from_table(cup_dices, disc_dices, ae_cdrs, cup_accs, disc_accs)
+    # print the results on screen
+    print('Dice Optic Cup = {}\nDice Optic Disc = {}\nMAE CDR = {}\nCUP_ACC={}\nDISC_ACC={}'.format(str(mean_cup_dice), str(mean_disc_dice), str(mae_cdr), str(mean_cup_acc), str(mean_disc_acc)))
+    # save the mean values in the output path
+    if not(output_path is None):
+        # initialize the output filename
+        output_filename = os.path.join(output_path, 'evaluation_segmentation.csv')
+        # save the results
+        save_csv_mean_segmentation_performance(output_filename, mean_cup_dice, mean_disc_dice, mae_cdr, mean_cup_acc, mean_disc_acc)
+
+    # return the average performance
+    return mean_cup_dice, mean_disc_dice, mae_cdr, mean_cup_acc, mean_disc_acc
+
+def save_csv_segmentation_table(table_filename, image_filenames, cup_dices, disc_dices, ae_cdrs):
+    '''
+    Save the table of segmentation results as a CSV file.
+    Input:
+        table_filename: a string with the full path and the table filename (with .csv extension)
+        image_filenames: a list of strings with the names of the images
+        cup_dices: a numpy array with the same length than the image_filenames list, with the Dice coefficient for each optic cup
+        disc_dices: a numpy array with the same length than the image_filenames list, with the Dice coefficient for each optic disc
+        ae_cdrs: a numpy array with the same length than the image_filenames list, with the absolute error of the vertical cup to disc ratio
+    '''
+
+    # write the data
+    with open(table_filename, 'w') as csv_file:
+        # initialize the writer
+        table_writer = csv.writer(csv_file)
+        # write the column names
+        table_writer.writerow(['Filename', 'Cup-Dice', 'Disc-Dice', 'AE-CDR'])
+        # write each row
+        for i in range(len(image_filenames)):
+            table_writer.writerow( [image_filenames[i], str(cup_dices[i]), str(disc_dices[i]), str(ae_cdrs[i])] )
+
+def save_csv_mean_segmentation_performance(output_filename, mean_cup_dice, mean_disc_dice, mae_cdrs, mean_cup_acc, mean_disc_acc):
+    '''
+    Save a CSV file with the mean performance
+    Input:
+        output_filename: a string with the full path and the table filename (with .csv extension)
+        mean_cup_dice: average Dice coefficient for the optic cups
+        mean_disc_dice: average Dice coefficient for the optic discs
+        mae_cdrs: mean absolute error of the vertical cup to disc ratios
+    '''
+
+    # write the data
+    with open(output_filename, 'w') as csv_file:
+        # initialize the writer
+        table_writer = csv.writer(csv_file)
+        # write the column names
+        table_writer.writerow(['Cup-Dice', 'Disc-Dice', 'AE-CDR', 'Cup-Acc', 'Disc-Acc', ])
+        # write each row
+        table_writer.writerow( [ str(mean_cup_dice), str(mean_disc_dice), str(mae_cdrs),
+                                 str(mean_cup_acc), str(mean_disc_acc)] )
